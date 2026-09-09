@@ -40,36 +40,36 @@ The mounted workspace required `--capture=sys`; default pytest file-descriptor c
 (
   . /workspace/.venv/runtime-env.sh  # This development workspace only.
   .venv/bin/python -m pytest -q --capture=sys -p no:cacheprovider \
-    --basetemp=/workspace/.venv/pytest-finalguard-focused-01 \
-    tests/test_hail_downloader.py tests/test_http_client.py \
-    tests/test_hail_coordinator.py tests/test_hail_setup.py
+    --basetemp=/workspace/.venv/pytest-formfix-focused-final \
+    tests/test_hail_config_flow.py tests/test_hail_setup.py \
+    tests/test_hail_documentation.py
   .venv/bin/python -m pytest -q --capture=sys -p no:cacheprovider \
-    --basetemp=/workspace/.venv/pytest-finalguard-originals-01 \
+    --basetemp=/workspace/.venv/pytest-formfix-originals-01 \
     tests/test_coordinator.py tests/test_radar_data.py tests/test_radar_downloader.py
   .venv/bin/python -m pytest -q --capture=sys -p no:cacheprovider \
-    --basetemp=/workspace/.venv/pytest-finalguard-full-final
+    --basetemp=/workspace/.venv/pytest-formfix-full-final
 )
 git diff --check
 ```
 
-Results after source remediation and the rain stop guard, including the unchanged documentation/example tests:
+Results after source remediation, the rain stop guard and the form-rendering fix:
 
 | Check | Result |
 | --- | --- |
-| Downloader/client/coordinator/setup tests | 110 passed |
+| Form/setup/documentation tests | 201 passed |
 | Original rain tests | 24 passed; all three original test files unchanged |
 | Reader tests | 36 passed in the full suite |
 | Simple notification example tests | 36 passed in the full suite |
 | Shadow-hold package tests | 34 passed in the full suite |
-| Full suite | **240 passed**, including all 24 unchanged original rain tests |
+| Full suite | **364 passed**, including all 24 unchanged original rain tests |
 | Full repository Ruff lint | Passed |
-| Ruff format check, 20 changed/new Python files | Passed |
+| Ruff format check, four Python files touched by the form fix | Passed |
 | Full repository format check | Four unchanged baseline files would be reformatted; not a pass |
-| Scoped mypy, seven implementation modules | Passed with imported types skipped; see below |
+| Scoped mypy, changed `config_flow.py` module | One existing HA subclass typing error with imports skipped; also reproduced on unchanged HEAD |
 | Broader mypy attempt | Killed, exit 137; no broad type-check pass |
 | Hassfest / HACS validation | Not run for this work |
 
-The implementation-only suite had 140 passing tests before the 70 example tests were added. Source remediation added 27 regressions; the final rain stop guard added three more. The first client/lifecycle run exposed two test assumptions: this HTTPX version loads certificates through `SSLContext.load_verify_locations`, and HA's initial one-shot stop listeners disappear when fired. The corrected tests exercise actual worker functions and SSL loading, not inline Mock executor targets. A documentation-phase coordinator/setup rerun had timed out; later runs completed. The pinned pytest-asyncio plugin emits an unset `asyncio_default_fixture_loop_scope` deprecation warning. Mocked HTTPX request logs in tests are not network access.
+The implementation-only suite had 140 passing tests before the 70 example tests were added. Source remediation added 27 regressions; the rain stop guard added three more. The form follow-up adds 124, including real configuration/options HTTP requests and translation loading. The first client/lifecycle run exposed two test assumptions: this HTTPX version loads certificates through `SSLContext.load_verify_locations`, and HA's initial one-shot stop listeners disappear when fired. The corrected tests exercise actual worker functions and SSL loading, not inline Mock executor targets. A documentation-phase coordinator/setup rerun had timed out; later runs completed. The pinned pytest-asyncio plugin emits an unset `asyncio_default_fixture_loop_scope` deprecation warning. Mocked HTTPX request logs in tests are not network access.
 
 ### Lint, formatting and types
 
@@ -81,20 +81,20 @@ RUFF=.venv/bin/ruff
 # RUFF=/tmp/meteoswiss-hail-scout-XXEiLJCb/venv/bin/ruff
 "$RUFF" check --no-cache
 "$RUFF" format --check --no-cache \
-  custom_components/meteoswiss_rain_radar/{__init__,binary_sensor,config_flow,const,coordinator,entity,sensor,hail_coordinator,hail_downloader,hail_reader,http_client,radar_downloader}.py \
-  tests/{hail_helpers,test_hail_coordinator,test_hail_documentation,test_hail_downloader,test_hail_reader,test_hail_setup,test_hail_shadow_example,test_http_client}.py
+  custom_components/meteoswiss_rain_radar/config_flow.py \
+  tests/{test_hail_config_flow,test_hail_setup,test_hail_documentation}.py
 "$RUFF" format --check --no-cache
 (
   . /workspace/.venv/runtime-env.sh  # This development workspace only.
   .venv/bin/python -m mypy --check-untyped-defs --follow-imports=skip \
     --ignore-missing-imports \
-    custom_components/meteoswiss_rain_radar/{__init__,coordinator,hail_coordinator,hail_downloader,hail_reader,http_client,radar_downloader}.py
+    custom_components/meteoswiss_rain_radar/config_flow.py
 )
 ```
 
 The four format exceptions are `detector.py`, `geo.py`, `models.py` and `radar.py` under `custom_components/meteoswiss_rain_radar/`. They were left untouched rather than mixing baseline formatting changes into hail work. Brace expansion in these command blocks requires Bash.
 
-The earlier broader mypy command used `--follow-imports=silent --ignore-missing-imports` on the original three hail modules and exited 137. The passing `--follow-imports=skip` check doesn't verify imported dependency types or the full HA API. It is not a replacement for the real HA tests or a full project type check.
+The earlier broader mypy command used `--follow-imports=silent --ignore-missing-imports` on the original three hail modules and exited 137. Earlier `--follow-imports=skip` checks passed on seven implementation modules that excluded `config_flow.py`; they don't verify imported dependency types or the full HA API. The form follow-up checks `config_flow.py` alone and reports an unexpected `domain` argument to `__init_subclass__` because HA's base-class types are skipped. The unchanged HEAD version reproduces that same error. No suppression or broad rerun was added, and no passing type check is claimed for this module.
 
 ### Source remediation checks
 
@@ -105,6 +105,20 @@ Client tests verify real certificate loading off-loop, cancellation during owned
 Expiry tests retain the actual scheduled timer handle and deadline, preserve coordinator error state, and confirm the next request fires at its original time. Data remains fresh at the age limit and becomes unknown one microsecond later. Shutdown barriers during rain refresh, hail discovery and platform forwarding cancel setup and leave no entry-owned client reference, timer or mapping. The setup failure handler owns cleanup; it doesn't create a shared cleanup task that could await itself.
 
 Rain unload barriers hold a scheduled HEAD miss or successful GET until after the real entry unloads. Both requests can finish, but neither can rearm a timer. Advancing past the retry and normal polling deadlines produces no requests, and HA's shared client stays open. A separate callback captured before `stop()` does nothing when awaited afterward. All three tests failed before the stop guard and passed after it. The guard sets the stopped flag before the first await; it doesn't cancel in-flight rain requests or change normal polling times.
+
+### Form rendering and settings follow-up
+
+The earlier 240 passing tests validated option schemas but never serialized the displayed form. A regression added before the fix reproduced HTTP **500** at `/api/config/config_entries/options/flow` and failed in HA's actual `_prepare_result_json` path: the custom `_finite` callable cannot be encoded by `voluptuous_serialize`. The installed serializer raised `TypeError`; the reported production trace raised `ValueError` for the same unsupported callable. After the fix, both initial and options endpoints return **200** with expanded native Rain/Hail sections.
+
+[`tests/test_hail_config_flow.py`](../tests/test_hail_config_flow.py) uses the real HA flow manager, HTTP views, `cv.custom_serializer` and strict JSON checks on rendered forms. Tests verify all six numeric fields, defaults, bounds and expanded sections; strings `nan`, `inf` and `-inf` through both HTTP flows; and Python nonfinite numbers directly through both flow managers. Nonfinite numeric tokens aren't legal JSON, so they aren't used to claim backend validation through the HTTP decoder. The installed Voluptuous range validator rejects hail NaN before the step; a separate test simulates permissive range behavior and proves post-submission finite validation still rejects it. Rain has the same finite check, without new ranges.
+
+Range/type/section-shape errors rejected by HA before the step return HTTP 400; post-submission validation returns an error form. Both paths remain serializable, keep finite saved/default values, and allow correction on the same flow. Tests retain old flat version-1 entry fixtures, check options precedence on reopening, reload one entry without changing IDs or another entry, and prove initial nondefault hail radius/threshold/age/poll values reach the real coordinator and reader. Initial data contains only legacy rain settings and coordinates; initial hail settings live in flat options, which the hail coordinator already reads. No coordinator fallback or rain parser change was needed.
+
+The translation tests in `test_hail_documentation.py` load English text through HA and verify both section names, every label's unit, help and errors for initial setup and options. This is backend serialization and translation coverage, not a browser screenshot test. HTTP tests use an isolated loopback server; source downloads are mocked. A test-only threaded DNS resolver avoids the installed pycares version's process-wide cleanup thread. The first matrix run exposed an overly strict distance assertion and assumptions about HA's invalid-JSON handling; corrected tests compare projected distance with tolerance and send Python nonfinite values directly to the flow manager.
+
+Final verification is **364 passed**, full repository Ruff lint, formatting of the four touched Python files, local documentation links/contracts and unchanged original rain-file hashes. Reduced mypy reports the one existing HA subclass error described above, not a pass. Runtime remains Python 3.12.14 / HA 2025.1.4 / plugin 0.13.205. **Python 3.14 and the reported installation's exact HA release were not tested.** The local report `.venv/form-fix-report.md` records commands and fail-before/pass-after logs; it is not a committed artifact.
+
+The HACS guidance was also corrected against its [Install action documentation](https://www.hacs.xyz/docs/use/entities/update/#install-action): an approved public branch or full commit SHA in the tracked repository can be installed without a release. This is snapshot selection, not persistent branch tracking. No HACS install, restart or live Home Assistant action was performed by these checks.
 
 ### Example contract tests
 
@@ -142,7 +156,7 @@ The tests read these local files and verify their bytes/checksums; they don't do
 
 ## Remaining limits
 
-- No tagged hail release, live installation, restart, storm trial or device action. Later [HACS pinning](hail.md#later-hacs-installation) and [shadow testing](hail.md#later-shadow-test) need approval.
+- No tagged hail release. Development checks performed no live installation, restart, storm trial or device action. Later [HACS snapshot selection](hail.md#later-hacs-installation) and [shadow testing](hail.md#later-shadow-test) need approval.
 - No integration protection hold, physical release logic or MESHS entity. The [shadow package](hail.md#shadow-hold-package) implements a restored local request and the 30-minute evidence rule only; it never releases its hold. Operator settings must match the integration, and failed reloads/queue errors require stopping the trial for review.
 - No proof of compatibility with newer HA releases or of dependency wheel availability on the eventual host. Test there before an approved installation.
 - Hassfest and HACS jobs in [the workflow](../.github/workflows/tests.yml) remain to be run for this work; the development runtime had no Docker. Upstream CI results don't validate this fork's hail change.

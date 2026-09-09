@@ -6,7 +6,7 @@
 
 This fork adds **reporting-only hail detection** to [deltaecho07's rain radar integration](https://github.com/deltaecho07/hass-meteoswiss-rain-radar). Existing rain entities, configuration entries and rain threshold behavior stay unchanged.
 
-**No tagged hail release is available yet.** The work is on `feature/hail-reporting` in `tma/hass-meteoswiss-rain-radar`. Upstream `v0.1.3` does not include it. No live Home Assistant installation or storm validation has been performed.
+**No tagged hail release is available yet.** The work is on `feature/hail-reporting` in `tma/hass-meteoswiss-rain-radar`. Upstream `v0.1.3` does not include it. Development verification uses isolated Home Assistant tests, not a live installation or storm validation.
 
 ## Entity interface
 
@@ -38,12 +38,14 @@ Read the [hail guide](docs/hail.md) for options, coverage and health states. Two
 
 ## Later installation through HACS
 
-Installation and any Home Assistant restart need separate approval. Once an approved hail release exists:
+Installation and any Home Assistant restart need separate approval. A release or merge is **not required** to install an approved public branch or commit:
 
-1. In HACS, open **Custom repositories** and add `https://github.com/tma/hass-meteoswiss-rain-radar`, type **Integration**.
-2. Select **MeteoSwiss Rain Radar** from this fork. **Pin an approved immutable published release/tag and record its commit SHA**, following the [version-selection limits](docs/hail.md#later-hacs-installation). Don't select a moving branch or accept unreviewed updates.
-3. After the separately approved download and restart, go to **Settings → Devices & services → Add Integration → MeteoSwiss Rain Radar**. Existing users keep their entry.
-4. The initial form has rain settings. Open the entry's options to adjust hail settings. Hail uses the current Home Assistant home location; saving options reloads the entry.
+1. In HACS, confirm that the tracked repository is `https://github.com/tma/hass-meteoswiss-rain-radar`, type **Integration**, not upstream. Add it through **Custom repositories** if needed.
+2. After the reviewed changes have been pushed, open **Developer tools → Actions**, choose `update.install`, and target the actual HACS update entity for this fork. Set **Version** to the approved full commit SHA, or `feature/hail-reporting` after confirming its current commit. HACS [supports these Version values](https://www.hacs.xyz/docs/use/entities/update/#install-action) without a release; the normal download dialog isn't an arbitrary branch picker. See the [detailed instructions](docs/hail.md#later-hacs-installation), including the optional release route.
+3. Record the installed SHA and disable automatic updates for this integration. This downloads a snapshot, not persistent branch tracking; later normal updates can replace it with `main`.
+4. After the download, restart Home Assistant yourself when approved. **Keep your existing integration entry; don't remove and recreate it.** Open its **Options** to see the expanded **Rain** and **Hail** sections, with units and help for all six settings. New users get the same sections through **Settings → Devices & services → Add Integration → MeteoSwiss Rain Radar**.
+
+Rain settings are radius (**km**, default 5) and rain-rate threshold (**mm/h**, default 0.2, strictly above). Hail settings are radius (**km**), inclusive POH threshold (**%**), maximum observation age (**minutes**) and poll interval (**seconds**). Initial hail choices take effect immediately; saving options reloads only that entry. Hail uses the current Home Assistant home location. Read the [settings and rain-reader limitations](docs/hail.md#options) before changing thresholds.
 
 ## Sources and development
 

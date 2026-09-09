@@ -26,20 +26,33 @@ Unchanged HDF5 assets are cached by URL plus SHA256; a changed checksum at the s
 
 ## Options
 
-Hail uses the current Home Assistant home location. No private coordinates belong in examples or reports. The initial configuration form still contains only the legacy rain settings; hail starts with defaults. Open the integration entry's options to change them. Saving options reloads the entry; existing version-1 entries and rain identifiers are retained.
+Initial setup and the entry's **Options** both show expanded **Rain** and **Hail** sections. All six fields have units in their labels and help explaining their meaning. Initial hail choices take effect immediately; saving options reloads only that entry. Keep existing version-1 entries: rain identifiers and flat storage keys are unchanged, so no migration or entry recreation is needed. Options take precedence over saved rain data when reopening the form.
 
-| Option key | Unit | Default | Accepted range |
+### Rain
+
+| Setting / stored key | Unit | Default | Meaning |
 | --- | --- | --- | --- |
-| `hail_radius_km` | km | 10 | 0.1–100 |
-| `hail_poh_threshold` | % | 80 | 0–100, inclusive comparison |
-| `hail_max_age_minutes` | minutes | 10 | 1–60 |
-| `hail_poll_seconds` | seconds | 60 | 15–300 |
+| Rain radius / `radius` | km | 5 | Search around the saved home location. The legacy detector rounds fractional radii up to whole grid cells, unlike hail's true circle. |
+| Rain-rate threshold / `threshold` | mm/h | 0.2 | Rain requires a value **strictly above** the threshold. Lower values include lighter rain; higher values require heavier rain. |
+
+Rain rate is not a probability or five-minute accumulation. The [official precipitation product documentation](https://opendatadocs.meteoswiss.ch/d-radar-data/d1-precipitation-radar-products) describes RZC/PRECIP as instantaneous `Rain_Rate` in mm/h. The inspected [2026-09-09 09:45 UTC RZC file](https://data.geo.admin.ch/ch.meteoschweiz.ogd-radar-precip/20260909-ch/rzc262520945vl.001.h5) confirms `quantity=RATE`, `unit=mm/h`, gain 1, offset 0, NaN no-data and zero undetect in `/dataset1/data1/what` (223,335 bytes; SHA256 `b50340942fd5f8699ba7d344f30744b73b44887bdea0cd61e3027a9fa53d4340`).
+
+The unchanged rain reader compares float32 raw values with `>`; values at 0.2 don't qualify at the default threshold. It **does not apply or validate gain/offset/unit metadata or explicitly mask no-data**. The mm/h label matches the current encoding, not a new parser guarantee. Hail's decoding, geometry and freshness guarantees do not apply to the legacy rain path. Rain inputs must be finite; no new rain ranges were added.
+
+### Hail
+
+Hail uses the current Home Assistant home location, not the coordinates saved at initial setup. No private coordinates belong in examples or reports.
+
+| Setting / stored key | Unit | Default | Range and meaning |
+| --- | --- | --- | --- |
+| Hail radius / `hail_radius_km` | km | 10 | 0.1–100; a true circle of radar cell centers around the current home location. |
+| POH threshold / `hail_poh_threshold` | % | 80 | 0–100; a cell **at or above** this value qualifies. POH estimates hail of any size at the ground in that cell, not a property hit probability or forecast. |
+| Maximum observation age / `hail_max_age_minutes` | minutes | 10 | 1–60; older observations make hail values unknown, not clear weather. |
+| Poll interval / `hail_poll_seconds` | seconds | 60 | 15–300; discovers five-minute source updates, not new observations on every poll. |
 
 All hail inputs must be finite numbers. An observation exactly at the maximum age is accepted; older data is stale. A threshold of 0 also qualifies valid zero-valued cells, so it is not a useful hail-alert setting. A larger radius can introduce partial coverage.
 
 These defaults are **provisional, not validated safety settings**. Reporting is immediate on receipt of a fresh qualifying observation; there is no eight-minute wait option. The proposed 30-minute clear period is a later automation requirement, not an integration option or implemented timer.
-
-Legacy rain options remain `radius` (default 5 km) and `threshold` (default 0.2). The rain threshold is an exclusive comparison against raw radar values, not a POH percentage or a newly verified physical rain unit. Hail's decoding, geometry and freshness guarantees must not be attributed to the unchanged rain path.
 
 ### Evidence behind the provisional settings
 
@@ -137,13 +150,14 @@ Group records by observation timestamp so repeated cache reads and source correc
 
 As checked on 2026-09-09, the fork has no published release or tag containing hail. Upstream `v0.1.3` is the rain-only baseline; unchanged manifest/version text in this working tree is not a hail release identifier.
 
-Once publication and installation are separately approved:
+After the reviewed changes are pushed and installation is approved, HACS can download a public branch or commit **without a release, merge or default-branch change**:
 
-1. Use HACS [Custom repositories](https://www.hacs.xyz/docs/faq/custom_repositories/) with `https://github.com/tma/hass-meteoswiss-rain-radar`, type **Integration**. Confirm the repository owner; the integration name remains **MeteoSwiss Rain Radar**.
-2. Require an approved **immutable published release/tag**, tied to a recorded full commit SHA. A normal Git tag can be moved; don't assume immutability just because it has a version name. Use an immutable release or verify the approved tag-to-SHA mapping and refuse any changed mapping.
-3. HACS documents **Download / Redownload → Need a different version?** for selecting an available version. It does **not** document an arbitrary-SHA dropdown or a revision lockfile, and some repositories have no selector. See [version selection](https://www.hacs.xyz/docs/use/repositories/dashboard/#downloading-a-specific-version-of-a-repository). If the approved version isn't offered, stop; don't substitute `main`, this topic branch or “latest”. Resolve publication/version selection before installing.
-4. Record the selected tag and verified SHA. Keep automatic update installation disabled for this integration and don't accept updates without review. This is an operational pin, not a claim that HACS enforces an immutable SHA. Read-only checks can use `gh api repos/tma/hass-meteoswiss-rain-radar/releases` and `gh api repos/tma/hass-meteoswiss-rain-radar/commits/APPROVED_TAG --jq .sha` after substituting the approved tag.
-5. Download and restart Home Assistant only with explicit approval, then configure the integration as described in the [README](../README.md). Don't copy this checkout into a live installation as a shortcut.
+1. Confirm that HACS tracks `https://github.com/tma/hass-meteoswiss-rain-radar`, type **Integration**, through [Custom repositories](https://www.hacs.xyz/docs/faq/custom_repositories/). The integration name remains **MeteoSwiss Rain Radar**. A branch must belong to the tracked repository: targeting the upstream update entity cannot install this fork's branch. Use the repository URL, not a `/tree/feature/hail-reporting` URL.
+2. In **Developer tools → Actions**, select `update.install` and target the actual HACS update entity belonging to this fork. Set **Version** to the approved **full commit SHA** for an exact snapshot, or `feature/hail-reporting` after verifying its current SHA. `APPROVED_FULL_COMMIT_SHA` is a placeholder for the reviewed, pushed revision, not a literal Version value; no future commit is assumed here. HACS documents this advanced [Install action](https://www.hacs.xyz/docs/use/entities/update/#install-action) for public branches and full SHAs as well as tags.
+3. Execute the download only when approved, then restart Home Assistant yourself. **Keep the existing integration entry; don't remove and recreate it.** Open the entry's **Options** and confirm both expanded sections, **Rain** and **Hail**, with units and help on all six fields. New entries use the same form at initial setup. Saving options reloads that entry and retains its entity IDs.
+4. Record the installed SHA and keep automatic updates disabled for this integration. Installing a branch downloads its current snapshot; it does **not** establish persistent branch tracking or an immutable revision lock. Later normal updates can replace the snapshot with `main`, so review updates before accepting them. If HACS rejects a revision or reports incompatibility, stop rather than substituting “latest”.
+
+An approved release/tag remains an optional route. HACS documents **Download / Redownload → Need a different version?** for [available versions](https://www.hacs.xyz/docs/use/repositories/dashboard/#downloading-a-specific-version-of-a-repository); that normal dialog isn't an arbitrary branch/SHA picker. Record the full SHA and verify the tag-to-SHA mapping, since ordinary tags can move. Neither route requires removing the integration entry. These are user-run instructions, not live Home Assistant actions performed by development tests.
 
 ## Sources and attribution
 

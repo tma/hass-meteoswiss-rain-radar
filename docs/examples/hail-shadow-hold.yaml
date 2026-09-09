@@ -1,0 +1,222 @@
+# Home Assistant package for a later APPROVED notification-only shadow trial.
+# Not protection control. No device actions and NO action ever clears the hold.
+# Add under homeassistant: packages: only after approval; do not install it now.
+# Replace the three radar entity IDs everywhere with entities from ONE entry.
+# Match radius/threshold/age to integration options, then reload this automation.
+# Keep sensor display units at % and km. See ../hail.md for reset requirements.
+input_boolean:
+  hail_shadow_hold:
+    name: Hail shadow hold
+    # No initial value: restore the latched request across restarts.
+input_number:
+  hail_shadow_clear_count:
+    name: Hail shadow distinct clear observations
+    min: -1
+    max: 7
+    step: 1
+    mode: box
+    # -1 means recovery is required; 0 means waiting for a new observation.
+input_datetime:
+  hail_shadow_last_clear:
+    name: Hail shadow last clear or reset boundary
+    has_date: true
+    has_time: true
+input_text:
+  hail_shadow_last_signature:
+    name: Hail shadow last clear signature
+    max: 255
+  hail_shadow_settings:
+    name: Hail shadow settings signature
+    max: 255
+
+automation:
+  - id: meteoswiss_hail_shadow_hold
+    alias: MeteoSwiss hail shadow hold notification only
+    initial_state: false
+    mode: queued
+    max: 20
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.meteoswiss_rain_radar_hail
+        id: observation
+      - platform: state
+        entity_id:
+          - sensor.meteoswiss_rain_radar_hail_maximum_poh
+          - sensor.meteoswiss_rain_radar_hail_qualifying_distance
+        id: metrics
+      - platform: time_pattern
+        minutes: "/1"
+        id: clock
+      - platform: homeassistant
+        event: start
+        id: reset
+      - platform: event
+        event_type: automation_reloaded
+        id: reset
+      - platform: state
+        entity_id: zone.home
+        id: reset
+      - platform: state
+        entity_id: automation.meteoswiss_hail_shadow_hold_notification_only
+        to: "on"
+        id: reset
+    variables:
+      hail_entity: binary_sensor.meteoswiss_rain_radar_hail
+      poh_entity: sensor.meteoswiss_rain_radar_hail_maximum_poh
+      distance_entity: sensor.meteoswiss_rain_radar_hail_qualifying_distance
+      radius_km: 10
+      threshold_percent: 80
+      max_age_minutes: 10
+    action:
+      # Compute from current states when this queued run starts, not when queued.
+      - variables:
+          observation: "{{ state_attr(hail_entity, 'observation') }}"
+          observation_ts: "{{ as_timestamp(observation, none) }}"
+          age_minutes: >-
+            {{ (as_timestamp(now()) - observation_ts) / 60
+               if observation_ts is number else none }}
+          health: "{{ state_attr(hail_entity, 'data_health') }}"
+          complete: "{{ state_attr(hail_entity, 'coverage_complete') == true }}"
+          poh: "{{ states(poh_entity) | float(none) }}"
+          distance: "{{ states(distance_entity) | float(none) }}"
+          count: "{{ states('input_number.hail_shadow_clear_count') | int(-1) }}"
+          last_ts: "{{ state_attr('input_datetime.hail_shadow_last_clear', 'timestamp') | float(0) }}"
+          settings: "v1:{{ [radius_km, threshold_percent, max_age_minutes] | to_json }}"
+          signature: >-
+            obs:{{ [observation_ts, health, complete, states(hail_entity), poh] | to_json }}
+          coherent: >-
+            {{ age_minutes is number and 0 <= age_minutes <= max_age_minutes
+               and observation_ts % 300 == 0
+               and health in ['ok', 'partial_coverage']
+               and poh is number and 0 <= poh <= 100
+               and state_attr(poh_entity, 'unit_of_measurement') == '%'
+               and state_attr(distance_entity, 'unit_of_measurement') == 'km'
+               and as_timestamp(state_attr(poh_entity, 'observation'), none) == observation_ts
+               and as_timestamp(state_attr(distance_entity, 'observation'), none) == observation_ts
+               and state_attr(poh_entity, 'data_health') == health
+               and state_attr(distance_entity, 'data_health') == health }}
+          alarm: >-
+            {{ coherent and is_state(hail_entity, 'on') and poh >= threshold_percent
+               and distance is number and 0 <= distance <= radius_km }}
+          clear: >-
+            {{ coherent and health == 'ok' and complete
+               and is_state(hail_entity, 'off') and poh < threshold_percent }}
+          interrupted: >-
+            {{ trigger is defined and trigger.id == 'observation'
+               and (trigger.to_state is none
+                    or trigger.to_state.state not in ['on', 'off']
+                    or trigger.to_state.attributes.get('data_health') not in ['ok', 'partial_coverage']) }}
+          decision: >-
+            {% if alarm %}alarm
+            {% elif (trigger is defined and trigger.id == 'reset')
+                    or not is_state('input_boolean.hail_shadow_hold', 'on')
+                    or settings != states('input_text.hail_shadow_settings')
+                    or last_ts <= 0 or count < -1 or count > 7 %}reset
+            {% elif interrupted or not clear %}invalid
+            {% elif count == -1 %}recover
+            {% elif observation_ts <= last_ts %}
+              {% if count > 0 and (observation_ts < last_ts
+                    or signature != states('input_text.hail_shadow_last_signature')) %}invalid
+              {% else %}ignore{% endif %}
+            {% elif count > 0 and observation_ts - last_ts != 300 %}gap
+            {% else %}clear{% endif %}
+      - choose:
+          - conditions: "{{ decision in ['alarm', 'reset', 'invalid', 'recover', 'gap'] }}"
+            sequence:
+              - if: "{{ decision in ['alarm', 'reset'] }}"
+                then:
+                  - service: input_boolean.turn_on
+                    target:
+                      entity_id: input_boolean.hail_shadow_hold
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.hail_shadow_clear_count
+                data:
+                  value: "{{ 0 if decision in ['reset', 'recover'] else -1 }}"
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.hail_shadow_last_clear
+                data:
+                  timestamp: "{{ as_timestamp(now()) }}"
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.hail_shadow_last_signature
+                data:
+                  value: ""
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.hail_shadow_settings
+                data:
+                  value: "{{ settings }}"
+              - if: "{{ decision == 'alarm' }}"
+                then:
+                  - service: persistent_notification.create
+                    data:
+                      notification_id: meteoswiss_hail_shadow_request
+                      title: "Hail shadow: hold requested"
+                      message: >-
+                        Source: MeteoSwiss. Observation {{ observation }};
+                        report {{ now().isoformat() }}; age {{ age_minutes | round(2) }} min.
+                        Radius {{ radius_km }} km; threshold >= {{ threshold_percent }}%;
+                        observed POH {{ poh }}%; qualifying cell center {{ distance }} km;
+                        health {{ health }}; complete coverage {{ complete }}.
+                        Only a local shadow helper was latched, no device was controlled.
+                        Not a forecast or property hit probability. Integration calculations;
+                        no endorsement. Data CC BY 4.0 https://creativecommons.org/licenses/by/4.0/
+                        Terms https://opendatadocs.meteoswiss.ch/general/terms-of-use
+          - conditions: "{{ decision == 'clear' }}"
+            sequence:
+              - variables:
+                  next_count: "{{ [count + 1, 7] | min }}"
+              # Invalidate the count before writing the rest: a partial write
+              # must lose evidence, not leave an inflated count with a new time.
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.hail_shadow_clear_count
+                data:
+                  value: 0
+              - service: input_datetime.set_datetime
+                target:
+                  entity_id: input_datetime.hail_shadow_last_clear
+                data:
+                  timestamp: "{{ observation_ts }}"
+              - service: input_text.set_value
+                target:
+                  entity_id: input_text.hail_shadow_last_signature
+                data:
+                  value: "{{ signature }}"
+              - service: input_number.set_value
+                target:
+                  entity_id: input_number.hail_shadow_clear_count
+                data:
+                  value: "{{ next_count }}"
+              # Recheck after the helper writes, before reporting satisfaction.
+              - if: >-
+                  {{ count == 6 and next_count == 7
+                     and 0 <= (as_timestamp(now()) - observation_ts) / 60 <= max_age_minutes
+                     and is_state(hail_entity, 'off')
+                     and state_attr(hail_entity, 'data_health') == 'ok'
+                     and state_attr(hail_entity, 'coverage_complete') == true
+                     and as_timestamp(state_attr(hail_entity, 'observation'), none) == observation_ts
+                     and as_timestamp(state_attr(poh_entity, 'observation'), none) == observation_ts
+                     and as_timestamp(state_attr(distance_entity, 'observation'), none) == observation_ts
+                     and state_attr(poh_entity, 'data_health') == 'ok'
+                     and state_attr(distance_entity, 'data_health') == 'ok'
+                     and state_attr(poh_entity, 'unit_of_measurement') == '%'
+                     and state_attr(distance_entity, 'unit_of_measurement') == 'km'
+                     and states(poh_entity) | float(none) == poh }}
+                then:
+                  - service: persistent_notification.create
+                    data:
+                      notification_id: meteoswiss_hail_shadow_clear_evidence
+                      title: "Hail shadow: clear evidence satisfied"
+                      message: >-
+                        Source: MeteoSwiss. Seven distinct fresh five-minute clear observations
+                        spanned 30 minutes, ending {{ observation }}.
+                        Report {{ now().isoformat() }}; age {{ age_minutes | round(2) }} min;
+                        radius {{ radius_km }} km; threshold {{ threshold_percent }}%;
+                        POH {{ poh }}%; health {{ health }}; complete coverage {{ complete }}.
+                        The shadow hold remains ON. This is not a release or a safety assurance.
+                        No device was controlled. Integration calculations; no endorsement.
+                        Data CC BY 4.0 https://creativecommons.org/licenses/by/4.0/
+                        Terms https://opendatadocs.meteoswiss.ch/general/terms-of-use

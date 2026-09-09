@@ -2,42 +2,51 @@
 	<img src="https://github.com/deltaecho07/hass-meteoswiss-rain-radar/blob/2903bedef066b9e1f0c1d4b676f891c9c393cc87/custom_components/meteoswiss_rain_radar/brand/logo.png" width="300">
 </p>
 
-# MeteoSwiss Rain Radar Integration for Home Assistant
+# MeteoSwiss Rain Radar for Home Assistant
 
-This integration allows you to get near-real time precipitation data into Home Assistant.
+This fork adds **reporting-only hail detection** to [deltaecho07's rain radar integration](https://github.com/deltaecho07/hass-meteoswiss-rain-radar). Existing rain entities, configuration entries and rain threshold behavior stay unchanged.
 
-## Current Funcionality
+**No tagged hail release is available yet.** The work is on `feature/hail-reporting` in `tma/hass-meteoswiss-rain-radar`. Upstream `v0.1.3` does not include it. No live Home Assistant installation or storm validation has been performed.
 
-The integration currently supports the following features:
+## Entity interface
 
-- Loading the latest available precipitation image from the Meteosuisse Open Government Data Service.
+The integration exposes **nine Home Assistant entities per entry**, grouped under one device: three existing rain entities and six new hail entities. It adds no custom services or device-control actions.
 
-- Based on your home location and configuration, it will calculate whether there is precipitation within the given radius. There is also a distance sensor to the nearest precipitation.
+These are typical entity IDs; renaming and multiple entries can change them. Use the entity registry to confirm yours.
 
-## Installation
+| Entity ID | Value | Purpose |
+| --- | --- | --- |
+| `binary_sensor.meteoswiss_rain_radar_rain` | `on` / `off` | Existing rain detection |
+| `sensor.meteoswiss_rain_radar_distance` | km | Existing nearest precipitation distance |
+| `sensor.meteoswiss_rain_radar_last_radar_image` | Timestamp | Existing rain observation time |
+| `binary_sensor.meteoswiss_rain_radar_hail` | `on` / `off` / unknown | Hail threshold met within the radius |
+| `sensor.meteoswiss_rain_radar_hail_maximum_poh` | % | Maximum observed POH within the radius |
+| `sensor.meteoswiss_rain_radar_hail_qualifying_distance` | km | Nearest cell meeting the POH threshold; unknown if none qualifies |
+| `sensor.meteoswiss_rain_radar_hail_observation` | UTC timestamp | Hail observation time, not download time |
+| `sensor.meteoswiss_rain_radar_hail_data_age` | minutes | Age of that observation |
+| `sensor.meteoswiss_rain_radar_hail_data_health` | Enum | `ok`, `partial_coverage`, `stale`, `missing`, `future`, `error`, and [other health states](docs/hail.md#entities-and-health) |
 
-### HACS
+Units above are native units; Home Assistant may convert hail distance or duration for display. Every hail entity also exposes `observation`, `data_health`, `coverage_complete` and source attribution as attributes.
 
-1. Install HACS: [HACS User Documentation](https://hacs.xyz/docs/use/)
-2. Go to the HACS page in your Home Assistant instance
-3. Click on the three dots in the top right-hand corner and select 'Custom Repositories...'
-4. Enter 'https://github.com/deltaecho07/hass-meteoswiss-rain-radar' into Repository field and select the type 'Integration'
-5. Click 'Add'
-6. Search for 'MeteoSwiss Rain Radar' and download the integration
-7. Restart Home Assistant
+For hail, `on` requires a fresh qualifying cell; `off` requires fresh, complete coverage below threshold. **Unknown or unavailable is not clear weather.** A qualifying cell can still report `on` with partial coverage, but partial coverage cannot prove `off`. Timestamp, age and health remain diagnostic context when weather values are unknown.
 
-### Configuration
+POH estimates hail of any size at the ground. A cell at or above 80% within 10 km qualifies by default; this is **not an 80% chance of hail hitting your property**, a forecast or an arrival time. MESHS is not required and has no entity.
 
-Once you have successfully added it through HACS, you can continue with the following steps
+Hail defaults are provisional: **10 km radius, inclusive 80% POH, maximum age 10 minutes, polling every 60 seconds**. Fresh qualifying data is reported immediately on receipt, with no eight-minute delay. These settings are not meteorologically validated and carry no source-latency guarantee. Missing, stale or incomplete data cannot prove clear conditions.
 
-1. Go to Settings > Integrations
-2. Click 'Add Integration'
-3. Search for 'MeteoSwiss Rain Radar' and select it
-4. If required, modify the detection radius and threshold
-5. Press 'OK' to add the integration
+Read the [hail guide](docs/hail.md) for options, coverage and health states. Two disabled examples are for later approved use: a [simple notification](docs/examples/hail-notification.yaml) and a [shadow-hold package](docs/examples/hail-shadow-hold.yaml). The package restores local helpers and notifies after distinct fresh clear observations span 30 minutes, but **never clears its hold or controls devices**. The integration itself has no persisted protection state.
 
-## FAQ
+## Later installation through HACS
 
-### Where can I find more information about MeteoSwiss's open government data products?
+Installation and any Home Assistant restart need separate approval. Once an approved hail release exists:
 
-All freely available data can be found [here](https://opendatadocs.meteoswiss.ch).
+1. In HACS, open **Custom repositories** and add `https://github.com/tma/hass-meteoswiss-rain-radar`, type **Integration**.
+2. Select **MeteoSwiss Rain Radar** from this fork. **Pin an approved immutable published release/tag and record its commit SHA**, following the [version-selection limits](docs/hail.md#later-hacs-installation). Don't select a moving branch or accept unreviewed updates.
+3. After the separately approved download and restart, go to **Settings → Devices & services → Add Integration → MeteoSwiss Rain Radar**. Existing users keep their entry.
+4. The initial form has rain settings. Open the entry's options to adjust hail settings. Hail uses the current Home Assistant home location; saving options reloads the entry.
+
+## Sources and development
+
+**Source: MeteoSwiss.** Hail data is free, needs no registration, and is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Percentages, radius checks and distances are integration calculations, not official warnings or an endorsement. See [official products, attribution and terms](docs/hail.md#sources-and-attribution).
+
+[Development and verification](docs/development.md) records test commands, fixture provenance and remaining limits. The software retains the upstream [MIT license and copyright](LICENSE).

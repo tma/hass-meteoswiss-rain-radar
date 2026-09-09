@@ -1,0 +1,74 @@
+# One automation mapping, for later approved use only. Disabled by default.
+# Replace all entity IDs with entities from ONE integration entry.
+# Match the three settings below to that entry's options; they aren't read from it.
+# This reports qualifying observations only. It has NO hold or clear/release timer.
+# Repeated cached checks update one notification; they are NOT new observations.
+# See ../hail.md for the separate 30-minute distinct-clear-observation requirement.
+id: meteoswiss_hail_reporting_notification
+alias: MeteoSwiss hail reporting notification only
+description: Fresh POH reports only; no protection state or release actions.
+initial_state: false
+mode: single
+trigger:
+  - platform: state
+    entity_id:
+      - binary_sensor.meteoswiss_rain_radar_hail
+      - sensor.meteoswiss_rain_radar_hail_maximum_poh
+      - sensor.meteoswiss_rain_radar_hail_qualifying_distance
+  - platform: homeassistant
+    event: start
+  - platform: time_pattern
+    minutes: "/1"
+variables:
+  hail_entity: binary_sensor.meteoswiss_rain_radar_hail
+  poh_entity: sensor.meteoswiss_rain_radar_hail_maximum_poh
+  distance_entity: sensor.meteoswiss_rain_radar_hail_qualifying_distance
+  radius_km: 10
+  threshold_percent: 80
+  max_age_minutes: 10
+  observation: "{{ state_attr(hail_entity, 'observation') }}"
+  observation_ts: "{{ as_timestamp(observation, none) }}"
+  age_minutes: >-
+    {{ (as_timestamp(now()) - observation_ts) / 60
+       if observation_ts is number else none }}
+  health: "{{ state_attr(hail_entity, 'data_health') }}"
+  maximum_poh: "{{ states(poh_entity) | float(none) }}"
+  distance_km: "{{ states(distance_entity) | float(none) }}"
+condition:
+  - condition: template
+    value_template: >-
+      {{ is_state(hail_entity, 'on')
+         and health in ['ok', 'partial_coverage']
+         and age_minutes is number and 0 <= age_minutes <= max_age_minutes
+         and maximum_poh is number and threshold_percent <= maximum_poh <= 100
+         and distance_km is number and 0 <= distance_km <= radius_km
+         and state_attr(poh_entity, 'unit_of_measurement') == '%'
+         and state_attr(distance_entity, 'unit_of_measurement') == 'km'
+         and as_timestamp(state_attr(poh_entity, 'observation'), none) == observation_ts
+         and as_timestamp(state_attr(distance_entity, 'observation'), none) == observation_ts
+         and state_attr(poh_entity, 'data_health') == health
+         and state_attr(distance_entity, 'data_health') == health }}
+action:
+  - service: persistent_notification.create
+    data:
+      notification_id: meteoswiss_hail_reporting
+      title: "MeteoSwiss: fresh qualifying hail observation"
+      message: >-
+        Source: MeteoSwiss. Observation: {{ observation }}.
+        Report time: {{ now().isoformat() }}.
+        Age at this check: {{ age_minutes | round(2) }} minutes.
+        Configured radius: {{ radius_km }} km;
+        inclusive POH threshold: {{ threshold_percent }}%.
+        Observed maximum POH: {{ maximum_poh }}%;
+        nearest qualifying cell center: {{ distance_km | round(2) }} km.
+        Health: {{ health }};
+        coverage complete: {{ state_attr(hail_entity, 'coverage_complete') }}.
+        {% if health == 'partial_coverage' %}
+        This maximum covers only the available cells, not the whole circle.
+        {% endif %}
+        This is a radar-cell estimate, not a property hit probability or forecast.
+        Reporting only: no protection hold, release decision or device action.
+        This notification can remain after the data becomes stale; check its time.
+        Derived calculations by this integration; no MeteoSwiss endorsement.
+        Data: CC BY 4.0 https://creativecommons.org/licenses/by/4.0/
+        Terms: https://opendatadocs.meteoswiss.ch/general/terms-of-use

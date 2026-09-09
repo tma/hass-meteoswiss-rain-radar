@@ -158,24 +158,27 @@ async def test_options_flow_defaults_and_validation(hass, setup_entry):
     result = await hass.config_entries.options.async_init(entry.entry_id)
     defaults = result["data_schema"]({})
     assert defaults == {
-        "radius": 5.0,
-        "threshold": 0.2,
-        CONF_HAIL_RADIUS: 10.0,
-        CONF_HAIL_THRESHOLD: 80.0,
-        CONF_HAIL_MAX_AGE: 10.0,
-        CONF_HAIL_POLL: 60.0,
+        "rain": {"radius": 5.0, "threshold": 0.2},
+        "hail": {
+            CONF_HAIL_RADIUS: 10.0,
+            CONF_HAIL_THRESHOLD: 80.0,
+            CONF_HAIL_MAX_AGE: 10.0,
+            CONF_HAIL_POLL: 60.0,
+        },
     }
     with pytest.raises(InvalidData):
         await hass.config_entries.options.async_configure(
-            result["flow_id"], user_input={CONF_HAIL_THRESHOLD: 101}
+            result["flow_id"], user_input={"hail": {CONF_HAIL_THRESHOLD: 101}}
         )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         user_input={
-            CONF_HAIL_RADIUS: 2.5,
-            CONF_HAIL_THRESHOLD: 80,
-            CONF_HAIL_MAX_AGE: 5,
-            CONF_HAIL_POLL: 90,
+            "hail": {
+                CONF_HAIL_RADIUS: 2.5,
+                CONF_HAIL_THRESHOLD: 80,
+                CONF_HAIL_MAX_AGE: 5,
+                CONF_HAIL_POLL: 90,
+            },
         },
     )
     assert result["type"] == "create_entry"
@@ -342,10 +345,18 @@ async def test_new_configuration_keeps_rain_defaults_and_current_coordinates(has
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": "user"}
     )
-    assert result["data_schema"]({}) == {"radius": 5.0, "threshold": 0.2}
+    assert result["data_schema"]({}) == {
+        "rain": {"radius": 5.0, "threshold": 0.2},
+        "hail": {
+            CONF_HAIL_RADIUS: 10.0,
+            CONF_HAIL_THRESHOLD: 80.0,
+            CONF_HAIL_MAX_AGE: 10.0,
+            CONF_HAIL_POLL: 60.0,
+        },
+    }
     with patch.object(hass.config_entries, "async_setup", AsyncMock(return_value=True)):
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={"radius": 5.0, "threshold": 0.2}
+            result["flow_id"], user_input={"rain": {"radius": 5.0, "threshold": 0.2}}
         )
         await hass.async_block_till_done()
     assert result["type"] == "create_entry"

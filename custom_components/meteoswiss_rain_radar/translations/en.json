@@ -2,28 +2,79 @@
   "config": {
     "step": {
       "user": {
-        "data": {
-          "radius": "Rain radius (km)",
-          "threshold": "Rain threshold"
+        "sections": {
+          "rain": {
+            "name": "Rain",
+            "description": "Existing precipitation reporting, separate from hail.",
+            "data": {
+              "radius": "Rain radius (km)",
+              "threshold": "Rain-rate threshold (mm/h)"
+            },
+            "data_description": {
+              "radius": "Search around the saved home location (default 5 km). The legacy rain detector rounds fractional radii up to whole grid cells.",
+              "threshold": "Rain is detected only above this rain rate (default 0.2 mm/h), not at the threshold; this is neither a probability nor a five-minute accumulation. Lower values include lighter rain; higher values require heavier rain."
+            }
+          },
+          "hail": {
+            "name": "Hail",
+            "description": "Radar observations, not a forecast or official warning. Defaults are provisional, not validated safety settings.",
+            "data": {
+              "hail_radius_km": "Hail radius (km)",
+              "hail_poh_threshold": "POH threshold (%)",
+              "hail_max_age_minutes": "Maximum observation age (minutes)",
+              "hail_poll_seconds": "Poll interval (seconds)"
+            },
+            "data_description": {
+              "hail_radius_km": "Include radar cell centers in a true circle around the current Home Assistant home location. Default 10 km; range 0.1–100 km.",
+              "hail_poh_threshold": "Report hail when a cell meets or exceeds this threshold (default 80%; range 0–100%). POH estimates hail of any size at the ground in a radar cell, not the chance of a property hit or a forecast.",
+              "hail_max_age_minutes": "Observations older than this limit make hail values unknown, not clear weather. Default 10 minutes; range 1–60 minutes.",
+              "hail_poll_seconds": "Check for new data at this interval (default 60 seconds; range 15–300 seconds). Polling discovers five-minute source updates; it does not create new observations."
+            }
+          }
         }
       }
+    },
+    "error": {
+      "invalid_options": "Enter finite numbers for all settings."
     }
   },
   "options": {
     "step": {
       "init": {
-        "data": {
-          "radius": "Rain radius (km)",
-          "threshold": "Rain threshold",
-          "hail_radius_km": "Hail radius (km, 0.1–100)",
-          "hail_poh_threshold": "Inclusive POH threshold (%, 0–100)",
-          "hail_max_age_minutes": "Maximum hail observation age (minutes, 1–60)",
-          "hail_poll_seconds": "Hail polling interval (seconds, 15–300)"
+        "sections": {
+          "rain": {
+            "name": "Rain",
+            "description": "Existing precipitation reporting, separate from hail.",
+            "data": {
+              "radius": "Rain radius (km)",
+              "threshold": "Rain-rate threshold (mm/h)"
+            },
+            "data_description": {
+              "radius": "Search around the saved home location (default 5 km). The legacy rain detector rounds fractional radii up to whole grid cells.",
+              "threshold": "Rain is detected only above this rain rate (default 0.2 mm/h), not at the threshold; this is neither a probability nor a five-minute accumulation. Lower values include lighter rain; higher values require heavier rain."
+            }
+          },
+          "hail": {
+            "name": "Hail",
+            "description": "Radar observations, not a forecast or official warning. Defaults are provisional, not validated safety settings.",
+            "data": {
+              "hail_radius_km": "Hail radius (km)",
+              "hail_poh_threshold": "POH threshold (%)",
+              "hail_max_age_minutes": "Maximum observation age (minutes)",
+              "hail_poll_seconds": "Poll interval (seconds)"
+            },
+            "data_description": {
+              "hail_radius_km": "Include radar cell centers in a true circle around the current Home Assistant home location. Default 10 km; range 0.1–100 km.",
+              "hail_poh_threshold": "Report hail when a cell meets or exceeds this threshold (default 80%; range 0–100%). POH estimates hail of any size at the ground in a radar cell, not the chance of a property hit or a forecast.",
+              "hail_max_age_minutes": "Observations older than this limit make hail values unknown, not clear weather. Default 10 minutes; range 1–60 minutes.",
+              "hail_poll_seconds": "Check for new data at this interval (default 60 seconds; range 15–300 seconds). Polling discovers five-minute source updates; it does not create new observations."
+            }
+          }
         }
       }
     },
     "error": {
-      "invalid_options": "Enter finite numbers within the displayed hail option ranges."
+      "invalid_options": "Enter finite numbers for all settings."
     }
   }
 }

@@ -4,7 +4,7 @@
 
 # MeteoSwiss Rain Radar for Home Assistant
 
-This fork adds **reporting-only hail detection** to [deltaecho07's rain radar integration](https://github.com/deltaecho07/hass-meteoswiss-rain-radar). Existing rain entities, configuration entries and rain threshold behavior stay unchanged.
+This fork adds **reporting-only hail detection** to [deltaecho07's rain radar integration](https://github.com/deltaecho07/hass-meteoswiss-rain-radar). Rain detection behavior and configuration entries stay unchanged. Rain sensor names, default entity IDs and icons now identify the product explicitly.
 
 **No tagged hail release is available yet.** The work is on `feature/hail-reporting` in `tma/hass-meteoswiss-rain-radar`. Upstream `v0.1.3` does not include it. Development verification uses isolated Home Assistant tests, not a live installation or storm validation.
 
@@ -14,19 +14,21 @@ The integration exposes **nine Home Assistant entities per entry**, grouped unde
 
 These are typical entity IDs; renaming and multiple entries can change them. Use the entity registry to confirm yours.
 
-| Entity ID | Value | Purpose |
-| --- | --- | --- |
-| `binary_sensor.meteoswiss_rain_radar_rain` | `on` / `off` | Existing rain detection |
-| `sensor.meteoswiss_rain_radar_distance` | km | Existing nearest precipitation distance |
-| `sensor.meteoswiss_rain_radar_last_radar_image` | Timestamp | Existing rain observation time |
-| `binary_sensor.meteoswiss_rain_radar_hail` | `on` / `off` / unknown | Hail threshold met within the radius |
-| `sensor.meteoswiss_rain_radar_hail_maximum_poh` | % | Maximum observed POH within the radius |
-| `sensor.meteoswiss_rain_radar_hail_qualifying_distance` | km | Nearest cell meeting the POH threshold; unknown if none qualifies |
-| `sensor.meteoswiss_rain_radar_hail_observation` | UTC timestamp | Hail observation time, not download time |
-| `sensor.meteoswiss_rain_radar_hail_data_age` | minutes | Age of that observation |
-| `sensor.meteoswiss_rain_radar_hail_data_health` | Enum | `ok`, `partial_coverage`, `stale`, `missing`, `future`, `error`, and [other health states](docs/hail.md#entities-and-health) |
+| Entity ID | Name | Value | Category |
+| --- | --- | --- | --- |
+| `binary_sensor.meteoswiss_rain_radar_rain` | Rain | `on` / `off` | Normal |
+| `sensor.meteoswiss_rain_radar_rain_qualifying_distance` | Rain qualifying distance | km; nearest qualifying rain cell | Normal |
+| `sensor.meteoswiss_rain_radar_rain_observation` | Rain observation | UTC timestamp | Diagnostic |
+| `binary_sensor.meteoswiss_rain_radar_hail` | Hail | `on` / `off` / unknown | Normal |
+| `sensor.meteoswiss_rain_radar_hail_maximum_poh` | Hail maximum POH | %; maximum within the radius | Normal |
+| `sensor.meteoswiss_rain_radar_hail_qualifying_distance` | Hail qualifying distance | km; nearest qualifying hail cell, unknown if none | Normal |
+| `sensor.meteoswiss_rain_radar_hail_observation` | Hail observation | UTC timestamp, not download time | Diagnostic |
+| `sensor.meteoswiss_rain_radar_hail_data_age` | Hail data age | minutes | Diagnostic |
+| `sensor.meteoswiss_rain_radar_hail_data_health` | Hail data health | [Health enum](docs/hail.md#entities-and-health) | Diagnostic |
 
-Units above are native units; Home Assistant may convert hail distance or duration for display. Every hail entity also exposes `observation`, `data_health`, `coverage_complete` and source attribution as attributes.
+Names above follow the device name, **MeteoSwiss Rain Radar**, unless customized. Rain uses `mdi:weather-rainy` and hail uses `mdi:weather-hail`; both distances use `mdi:map-marker-distance` and both observations use `mdi:clock-outline`. Units above are native units; Home Assistant may convert hail distance or duration for display. Rain distance keeps its existing km behavior, including on imperial systems. Every hail entity also exposes `observation`, `data_health`, `coverage_complete` and source attribution as attributes.
+
+**Breaking entity ID change:** existing default `sensor.meteoswiss_rain_radar_distance` becomes `sensor.meteoswiss_rain_radar_rain_qualifying_distance`, and `sensor.meteoswiss_rain_radar_last_radar_image` becomes `sensor.meteoswiss_rain_radar_rain_observation`. Setup renames those registry entries automatically, including generated numeric duplicates, without replacing their unique IDs. Custom IDs and user metadata are preserved. **Update external automation, script and dashboard references yourself**; this integration doesn't rewrite them. See the [migration rules](docs/hail.md#rain-entity-id-migration) for collisions and rollback.
 
 For hail, `on` requires a fresh qualifying cell; `off` requires fresh, complete coverage below threshold. **Unknown or unavailable is not clear weather.** A qualifying cell can still report `on` with partial coverage, but partial coverage cannot prove `off`. Timestamp, age and health remain diagnostic context when weather values are unknown.
 

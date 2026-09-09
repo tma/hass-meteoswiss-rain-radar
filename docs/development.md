@@ -116,9 +116,30 @@ Range/type/section-shape errors rejected by HA before the step return HTTP 400; 
 
 The translation tests in `test_hail_documentation.py` load English text through HA and verify both section names, every label's unit, help and errors for initial setup and options. This is backend serialization and translation coverage, not a browser screenshot test. HTTP tests use an isolated loopback server; source downloads are mocked. A test-only threaded DNS resolver avoids the installed pycares version's process-wide cleanup thread. The first matrix run exposed an overly strict distance assertion and assumptions about HA's invalid-JSON handling; corrected tests compare projected distance with tolerance and send Python nonfinite values directly to the flow manager.
 
-Final verification is **364 passed**, full repository Ruff lint, formatting of the four touched Python files, local documentation links/contracts and unchanged original rain-file hashes. Reduced mypy reports the one existing HA subclass error described above, not a pass. Runtime remains Python 3.12.14 / HA 2025.1.4 / plugin 0.13.205. **Python 3.14 and the reported installation's exact HA release were not tested.** The local report `.venv/form-fix-report.md` records commands and fail-before/pass-after logs; it is not a committed artifact.
+Form-fix verification was **364 passed**, full repository Ruff lint, formatting of the four touched Python files, local documentation links/contracts and unchanged original rain-file hashes. Reduced mypy reports the one existing HA subclass error described above, not a pass. Runtime remains Python 3.12.14 / HA 2025.1.4 / plugin 0.13.205. **Python 3.14 and the reported installation's exact HA release were not tested.** The local report `.venv/form-fix-report.md` records commands and fail-before/pass-after logs; it is not a committed artifact.
 
 The HACS guidance was also corrected against its [Install action documentation](https://www.hacs.xyz/docs/use/entities/update/#install-action): an approved public branch or full commit SHA in the tracked repository can be installed without a release. This is snapshot selection, not persistent branch tracking. No HACS install, restart or live Home Assistant action was performed by these checks.
+
+### Entity alignment follow-up
+
+Rain/hail names, icons and observation categories now match without merging coordinators or changing weather algorithms. `MeteoSwissRadarEntity` holds shared device behavior; Rain/Hail sibling entities keep their product behavior. Both sensor groups use descriptions, with explicit legacy unique ID suffixes for rain. See the [breaking rain ID mapping](hail.md#rain-entity-id-migration) before an approved upgrade.
+
+The installed HA 2025.1.4 registry implementation was inspected before writing the migration. `async_generate_entity_id` checks registered entities and current states; `async_update_entity(new_entity_id=...)` retains the registry identity and other fields. Migration runs before platform forwarding and keeps version-1 flat settings. It recognizes only the two known rain sensor identities and legacy default ID patterns belonging to that entry.
+
+Eight cases in [`tests/test_entity_alignment.py`](../tests/test_entity_alignment.py) cover new IDs/names/icons/categories, unchanged rain km under metric and imperial preferences, legacy timestamp availability, exactly two upgrade renames, stable unique IDs and reloads, two entries with numeric suffixes, occupied registry/state targets, and preservation of custom IDs/names/icons/aliases/area/disabled/hidden metadata and sensor options. Scope checks reject unrelated ownership, platforms, domains and identities. The existing hail state and safety tests remain unchanged.
+
+```sh
+(
+  . /workspace/.venv/runtime-env.sh
+  .venv/bin/python -m pytest -q --capture=sys -p no:cacheprovider \
+    --basetemp=/workspace/.venv/pytest-alignment-focused-20260909-01 \
+    tests/test_entity_alignment.py tests/test_hail_setup.py
+  .venv/bin/python -m pytest -q --capture=sys -p no:cacheprovider \
+    --basetemp=/workspace/.venv/pytest-alignment-full-20260909-01
+)
+```
+
+The single focused run had 47 passes and two test-fixture failures: HA's initial domain setup already loads both saved entries, so the fixture must not set up the second one again. After correcting that assumption, the single full-suite run passed **372 tests**, including all 24 original rain tests. All three original rain test files are unchanged. Ruff lint and formatting passed for the five touched Python files; local documentation contracts passed. Logs and the concise handoff are in `.venv/alignment-{focused,full}.log` and `.venv/alignment-report.md` in the development workspace. No broad type check, live migration, installation, restart or device action was run. Rain geometry and freshness differences remain out of scope.
 
 ### Example contract tests
 

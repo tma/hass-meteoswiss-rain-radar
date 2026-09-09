@@ -8,7 +8,7 @@ from homeassistant.helpers.update_coordinator import (
 from .const import DOMAIN
 
 
-class MeteoSwissRainRadarEntity(
+class MeteoSwissRadarEntity(
     CoordinatorEntity,
 ):
     _attr_has_entity_name = True
@@ -41,7 +41,11 @@ class MeteoSwissRainRadarEntity(
         return self.coordinator.last_update_success
 
 
-class MeteoSwissHailEntity(MeteoSwissRainRadarEntity):
+class MeteoSwissRainEntity(MeteoSwissRadarEntity):
+    """Rain entities using the legacy coordinator's state and availability."""
+
+
+class MeteoSwissHailEntity(MeteoSwissRadarEntity):
     _attr_attribution = "Source: MeteoSwiss"
 
     @property

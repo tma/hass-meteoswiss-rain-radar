@@ -26,7 +26,7 @@ Unchanged HDF5 assets are cached by URL plus SHA256; a changed checksum at the s
 
 ## Options
 
-Initial setup and the entry's **Options** both show expanded **Rain** and **Hail** sections. All six fields have units in their labels and help explaining their meaning. Initial hail choices take effect immediately; saving options reloads only that entry. Keep existing version-1 entries: rain identifiers and flat storage keys are unchanged, so no migration or entry recreation is needed. Options take precedence over saved rain data when reopening the form.
+Initial setup and the entry's **Options** both show expanded **Rain** and **Hail** sections. All six fields have units in their labels and help explaining their meaning. Initial hail choices take effect immediately; saving options reloads only that entry. Keep existing version-1 entries: unique IDs and flat storage keys are unchanged, so no configuration-entry migration or recreation is needed. Two default rain entity IDs are [renamed automatically](#rain-entity-id-migration). Options take precedence over saved rain data when reopening the form.
 
 ### Rain
 
@@ -64,16 +64,21 @@ The guidance supports avoiding a MESHS size gate and delaying release to avoid r
 
 ## Entities and health
 
-All six hail entities share the existing device. Unique IDs are the configuration entry ID followed by the suffix below; Home Assistant entity IDs can differ after renaming or with multiple entries. Check the entity registry rather than constructing IDs from these suffixes.
+All nine rain/hail entities share the existing device. Unique IDs are the configuration entry ID followed by the suffix below; Home Assistant entity IDs can differ after renaming or with multiple entries. Check the entity registry rather than constructing IDs from these suffixes. The [README table](../README.md#entity-interface) lists default entity IDs.
 
-| Name | Unique ID suffix | State/unit |
-| --- | --- | --- |
-| Hail | `_hail` | `on`, `off` or unknown |
-| Hail maximum POH | `_hail_max_poh` | % |
-| Hail qualifying distance | `_hail_distance` | km |
-| Hail observation | `_hail_observation` | UTC timestamp |
-| Hail data age | `_hail_age` | minutes (`min`) |
-| Hail data health | `_hail_health` | enum below |
+| Name | Unique ID suffix | State/unit | Category | Explicit icon |
+| --- | --- | --- | --- | --- |
+| Rain | `_rain` | `on` or `off` | Normal | `mdi:weather-rainy` |
+| Rain qualifying distance | `_distance` | km | Normal | `mdi:map-marker-distance` |
+| Rain observation | `_last_radar` | UTC timestamp | Diagnostic | `mdi:clock-outline` |
+| Hail | `_hail` | `on`, `off` or unknown | Normal | `mdi:weather-hail` |
+| Hail maximum POH | `_hail_max_poh` | % | Normal | Unchanged default |
+| Hail qualifying distance | `_hail_distance` | km | Normal | `mdi:map-marker-distance` |
+| Hail observation | `_hail_observation` | UTC timestamp | Diagnostic | `mdi:clock-outline` |
+| Hail data age | `_hail_age` | minutes (`min`) | Diagnostic | Unchanged default |
+| Hail data health | `_hail_health` | enum below | Diagnostic | Unchanged default |
+
+Rain observation is now diagnostic, matching hail observation's category, but retains its legacy availability: a failed rain coordinator makes it unavailable. Hail diagnostics remain readable on a coordinator failure. Rain distance deliberately has no distance device class, so it still displays km under imperial preferences; hail's existing distance conversion is unchanged. Detection and qualifying distances remain normal entities. This presentation refactor does not align the products' different decoding, geometry, thresholds or freshness rules.
 
 Every hail entity exposes `data_health`, `coverage_complete` and `observation` attributes, plus `Source: MeteoSwiss` attribution. Timestamp, age and health are diagnostics. On failure, a retained timestamp is only diagnostic context, not evidence that cached weather is usable. Future or absent timestamps have no numeric age. The age entity updates with entity refreshes, not continuously; automations should calculate age from the observation and `now()`, never from `last_changed`, a poll time or a download time.
 
@@ -92,6 +97,23 @@ Every hail entity exposes `data_health`, `coverage_complete` and `observation` a
 | `error` | Request, checksum, metadata, decoding or other update failure. Even a fresh cached result cannot certify weather. No weather values. |
 
 Normal handled failures produce `unknown` weather states with readable health. An unexpected coordinator failure can make weather entities `unavailable`; diagnostics remain readable while loaded. Treat both `unknown` and `unavailable` as no evidence. Don't coerce either to `off` or numeric zero. Only complete, fresh `ok` observations below threshold provide clear samples, and **one clear sample never releases protection**.
+
+## Rain entity ID migration
+
+**Breaking change:** rain metrics now have product-prefixed names and default Home Assistant entity IDs. This replaces the earlier plan to preserve all entity IDs; registry unique IDs still stay unchanged.
+
+| Old name / default entity ID | New name / default entity ID | Retained unique ID suffix |
+| --- | --- | --- |
+| Distance / `sensor.meteoswiss_rain_radar_distance` | Rain qualifying distance / `sensor.meteoswiss_rain_radar_rain_qualifying_distance` | `_distance` |
+| Last Radar Image / `sensor.meteoswiss_rain_radar_last_radar_image` | Rain observation / `sensor.meteoswiss_rain_radar_rain_observation` | `_last_radar` |
+
+Setup uses Home Assistant's entity registry before platform registration. Only sensors owned by this integration and configuration entry, with these two known unique IDs and exact legacy default IDs, are renamed. Generated numeric suffixes such as `_2` are accepted and retained when free. If a target is occupied by another registry entry or current state, Home Assistant allocates a free numeric ID without overwriting it. Repeated setup and options reloads leave the migrated IDs alone.
+
+Custom entity IDs outside those legacy patterns are left alone. Home Assistant doesn't record whether an ID matching a generated default was manually chosen; exact defaults and ordinary numeric duplicates are treated as defaults. Custom friendly names, icons, aliases, disabled/hidden state, area and other user metadata are preserved, including when a default ID is migrated. Rain/Hail binary IDs and all existing hail IDs are unchanged. New installations get the new names and IDs directly.
+
+**Update references to the old IDs in your automations, scripts, templates and dashboards.** Check the resulting registry IDs, especially with multiple entries or collisions. This integration does not rewrite external configuration files or add forwarding entities. Keep the version-1 entry: no version bump, duplicate entry or identity replacement is needed. Rolling back code keeps the same unique IDs and registry entries, but does not undo the entity ID rename or your reference edits; don't assume the old IDs return automatically.
+
+Isolated [development checks](development.md#entity-alignment-follow-up) exercise real HA registry/platform setup, upgrades, reloads, collisions, metadata and unit preferences. They are not live migration or storm validation.
 
 ## Notification-only example
 
@@ -154,7 +176,7 @@ After the reviewed changes are pushed and installation is approved, HACS can dow
 
 1. Confirm that HACS tracks `https://github.com/tma/hass-meteoswiss-rain-radar`, type **Integration**, through [Custom repositories](https://www.hacs.xyz/docs/faq/custom_repositories/). The integration name remains **MeteoSwiss Rain Radar**. A branch must belong to the tracked repository: targeting the upstream update entity cannot install this fork's branch. Use the repository URL, not a `/tree/feature/hail-reporting` URL.
 2. In **Developer tools → Actions**, select `update.install` and target the actual HACS update entity belonging to this fork. Set **Version** to the approved **full commit SHA** for an exact snapshot, or `feature/hail-reporting` after verifying its current SHA. `APPROVED_FULL_COMMIT_SHA` is a placeholder for the reviewed, pushed revision, not a literal Version value; no future commit is assumed here. HACS documents this advanced [Install action](https://www.hacs.xyz/docs/use/entities/update/#install-action) for public branches and full SHAs as well as tags.
-3. Execute the download only when approved, then restart Home Assistant yourself. **Keep the existing integration entry; don't remove and recreate it.** Open the entry's **Options** and confirm both expanded sections, **Rain** and **Hail**, with units and help on all six fields. New entries use the same form at initial setup. Saving options reloads that entry and retains its entity IDs.
+3. Execute the download only when approved, then restart Home Assistant yourself. **Keep the existing integration entry; don't remove and recreate it.** Open the entry's **Options** and confirm both expanded sections, **Rain** and **Hail**, with units and help on all six fields. New entries use the same form at initial setup. Saving options reloads that entry. The first setup of this revision applies the [rain ID migration](#rain-entity-id-migration); subsequent reloads retain the resulting IDs.
 4. Record the installed SHA and keep automatic updates disabled for this integration. Installing a branch downloads its current snapshot; it does **not** establish persistent branch tracking or an immutable revision lock. Later normal updates can replace the snapshot with `main`, so review updates before accepting them. If HACS rejects a revision or reports incompatibility, stop rather than substituting “latest”.
 
 An approved release/tag remains an optional route. HACS documents **Download / Redownload → Need a different version?** for [available versions](https://www.hacs.xyz/docs/use/repositories/dashboard/#downloading-a-specific-version-of-a-repository); that normal dialog isn't an arbitrary branch/SHA picker. Record the full SHA and verify the tag-to-SHA mapping, since ordinary tags can move. Neither route requires removing the integration entry. These are user-run instructions, not live Home Assistant actions performed by development tests.

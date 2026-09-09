@@ -3,20 +3,14 @@ from homeassistant.components.binary_sensor import (
 )
 
 from .const import DOMAIN
-from .entity import MeteoSwissHailEntity, MeteoSwissRainRadarEntity
+from .entity import MeteoSwissHailEntity, MeteoSwissRainEntity
 
 
-class RainBinarySensor(
-    MeteoSwissRainRadarEntity,
-    BinarySensorEntity,
-):
+class RainBinarySensor(MeteoSwissRainEntity, BinarySensorEntity):
     _attr_name = "Rain"
+    _attr_icon = "mdi:weather-rainy"
 
-    def __init__(
-        self,
-        coordinator,
-        entry,
-    ):
+    def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_rain"
 

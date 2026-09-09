@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.event import async_track_point_in_utc_time
+from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import CONF_RADIUS, CONF_THRESHOLD, DOMAIN
@@ -13,6 +15,9 @@ from .detector import RainDetector
 from .models import RadarResult
 from .radar import RadarData
 from .radar_downloader import RadarDownloader
+
+if TYPE_CHECKING:
+    from .hail_coordinator import MeteoSwissHailCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,15 +34,18 @@ class MeteoSwissRainRadarCoordinator(DataUpdateCoordinator[RadarResult]):
             name=DOMAIN,
         )
         self.entry = entry
-        self.downloader = RadarDownloader()
+        self.hail_coordinator: MeteoSwissHailCoordinator | None = None
+        self.downloader = RadarDownloader(get_async_client(hass))
         self.detector = RainDetector()
         self.result_data: RadarResult | None = None
         self._remove_listener = None
+        self._stopped = False
 
     def start(self):
         self._schedule_next_update()
 
     async def stop(self):
+        self._stopped = True
         await self.downloader.close()
         if self._remove_listener:
             self._remove_listener()
@@ -47,6 +55,8 @@ class MeteoSwissRainRadarCoordinator(DataUpdateCoordinator[RadarResult]):
         self,
         retry: bool = False,
     ):
+        if self._stopped:
+            return
 
         if self._remove_listener:
             self._remove_listener()
@@ -86,6 +96,8 @@ class MeteoSwissRainRadarCoordinator(DataUpdateCoordinator[RadarResult]):
         self,
         _now,
     ):
+        if self._stopped:
+            return
         await self.async_refresh()
 
     def _expected_timestamp(self):

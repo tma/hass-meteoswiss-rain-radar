@@ -1,20 +1,36 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from io import BytesIO
 
 import httpx
 
 from .const import METEOSWISS_API_BASE_URL
+from .http_client import async_create_client
 
 
 class RadarDownloader:
-    def __init__(self):
-        self._client = None
+    def __init__(self, client: httpx.AsyncClient | None = None):
+        self._client = client
+        self._owns_client = client is None
+        self._client_lock = asyncio.Lock()
+        self._closed = False
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        async with self._client_lock:
+            if self._closed:
+                raise RuntimeError("Radar downloader is closed")
+            if self._client is None:
+                self._client = await async_create_client()
+            return self._client
 
     async def close(self):
-        if self._client:
-            await self._client.aclose()
+        async with self._client_lock:
+            self._closed = True
+            if self._client and self._owns_client:
+                await self._client.aclose()
+            self._client = None
 
     @staticmethod
     def build_filename(dt: datetime) -> str:
@@ -38,9 +54,13 @@ class RadarDownloader:
         timestamp: datetime,
     ) -> bool:
         _, url = self.build_url(timestamp)
-        if not self._client:
-            self._client = httpx.AsyncClient(timeout=30)
-        response = await self._client.head(url, headers={"Cache-Control": "no-cache"})
+        client = await self._get_client()
+        response = await client.head(
+            url,
+            headers={"Cache-Control": "no-cache"},
+            timeout=30,
+            follow_redirects=False,
+        )
         return response.status_code == 200
 
     async def fetch_radar(
@@ -48,8 +68,12 @@ class RadarDownloader:
         timestamp: datetime,
     ) -> BytesIO:
         _, url = self.build_url(timestamp)
-        if not self._client:
-            self._client = httpx.AsyncClient(timeout=30)
-        response = await self._client.get(url, headers={"Cache-Control": "no-cache"})
+        client = await self._get_client()
+        response = await client.get(
+            url,
+            headers={"Cache-Control": "no-cache"},
+            timeout=30,
+            follow_redirects=False,
+        )
         response.raise_for_status()
         return BytesIO(response.content)

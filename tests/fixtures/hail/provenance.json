@@ -1,0 +1,40 @@
+{
+  "attribution": "Source: MeteoSwiss",
+  "license": "CC BY 4.0",
+  "license_url": "https://creativecommons.org/licenses/by/4.0/",
+  "terms": [
+    "https://opendatadocs.meteoswiss.ch/general/terms-of-use",
+    "https://www.geo.admin.ch/en/general-terms-of-use-fsdi"
+  ],
+  "product_documentation": "https://opendatadocs.meteoswiss.ch/d-radar-data/d3-hail-radar-products",
+  "stac_collection": "https://data.geo.admin.ch/api/stac/v1/collections/ch.meteoschweiz.ogd-radar-hail",
+  "stac_browser": "https://data.geo.admin.ch/browser/index.html#/collections/ch.meteoschweiz.ogd-radar-hail",
+  "odim_standard": "https://www.eumetnet.eu/wp-content/uploads/2021/07/ODIM_H5_v2.4.pdf",
+  "adaptations": "None. These are unchanged national radar files, with no personal coordinates. Test-derived percentages and cell-center distances are integration calculations, not MeteoSwiss warnings or an endorsement.",
+  "unit_evidence": {
+    "POH": "ODIM Table 16: dimensionless [0, 1]. File unit fields are blank, gain 1, offset 0. Convert to percent.",
+    "MESH": "File quantity MESH; both unit fields and ODIM Table 16 say mm. Product documentation agrees. The STAC collection description says cm; it is not used for decoding."
+  },
+  "geometry": "ODIM Table 5 outer pixel corners; section 5.2 rows north to south, columns west to east. Rounded geographic corners in these files disagree with cell-scale extents by less than 10 m.",
+  "float_encoding": "The POH file includes 0.7999999523162842, exactly float32(80) * float32(0.01) widened to float64. The reader normalizes exact integer-percent float32 encodings only, not nearby arbitrary values.",
+  "fixtures": [
+    {
+      "name": "bzc262520825vl.845.h5",
+      "url": "https://data.geo.admin.ch/ch.meteoschweiz.ogd-radar-hail/20260909-ch/bzc262520825vl.845.h5",
+      "observation": "2026-09-09T08:25:00+00:00",
+      "retrieved": "2026-09-09T08:28:34.479581+00:00",
+      "bytes": 25010,
+      "sha256": "d604554e99f8d1f17af21dd22f531f3283e3c1f188ec7cf2a8321d6838d99765",
+      "stac_checksum": "1220d604554e99f8d1f17af21dd22f531f3283e3c1f188ec7cf2a8321d6838d99765"
+    },
+    {
+      "name": "mzc262520825vl.850.h5",
+      "url": "https://data.geo.admin.ch/ch.meteoschweiz.ogd-radar-hail/20260909-ch/mzc262520825vl.850.h5",
+      "observation": "2026-09-09T08:25:00+00:00",
+      "retrieved": "2026-09-09T08:28:34.571247+00:00",
+      "bytes": 23817,
+      "sha256": "74067e4d1f51250bfecb665de5714e0c0486d393192edf906069790b5294d074",
+      "stac_checksum": "122074067e4d1f51250bfecb665de5714e0c0486d393192edf906069790b5294d074"
+    }
+  ]
+}

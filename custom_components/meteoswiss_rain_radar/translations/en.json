@@ -1,0 +1,29 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "radius": "Rain radius (km)",
+          "threshold": "Rain threshold"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "radius": "Rain radius (km)",
+          "threshold": "Rain threshold",
+          "hail_radius_km": "Hail radius (km, 0.1–100)",
+          "hail_poh_threshold": "Inclusive POH threshold (%, 0–100)",
+          "hail_max_age_minutes": "Maximum hail observation age (minutes, 1–60)",
+          "hail_poll_seconds": "Hail polling interval (seconds, 15–300)"
+        }
+      }
+    },
+    "error": {
+      "invalid_options": "Enter finite numbers within the displayed hail option ranges."
+    }
+  }
+}

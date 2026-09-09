@@ -39,3 +39,16 @@ class MeteoSwissRainRadarEntity(
     @property
     def available(self):
         return self.coordinator.last_update_success
+
+
+class MeteoSwissHailEntity(MeteoSwissRainRadarEntity):
+    _attr_attribution = "Source: MeteoSwiss"
+
+    @property
+    def extra_state_attributes(self):
+        result = self.coordinator.current_result
+        return {
+            "data_health": result.analysis.health,
+            "coverage_complete": result.analysis.coverage_complete,
+            "observation": result.observation,
+        }

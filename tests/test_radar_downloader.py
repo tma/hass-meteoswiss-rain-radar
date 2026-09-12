@@ -111,3 +111,33 @@ async def test_fetch_radar_raises_on_http_error(downloader, httpx_mock):
 
     with pytest.raises(httpx.HTTPStatusError):
         await downloader.fetch_radar(TEST_DT)
+
+
+# ---------------------------------------------------------------------------
+# radar_exists: absence is only 404, every other status is a failure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [301, 302, 401, 403, 429, 500, 503])
+async def test_radar_exists_raises_on_other_statuses(downloader, httpx_mock, status):
+    httpx_mock.add_response(method="HEAD", url=EXPECTED_URL, status_code=status)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await downloader.radar_exists(TEST_DT)
+
+
+@pytest.mark.asyncio
+async def test_radar_exists_raises_on_unexpected_success_status(downloader, httpx_mock):
+    httpx_mock.add_response(method="HEAD", url=EXPECTED_URL, status_code=204)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await downloader.radar_exists(TEST_DT)
+
+
+@pytest.mark.asyncio
+async def test_radar_exists_propagates_transport_errors(downloader, httpx_mock):
+    httpx_mock.add_exception(httpx.ReadTimeout("timeout"), method="HEAD")
+
+    with pytest.raises(httpx.ReadTimeout):
+        await downloader.radar_exists(TEST_DT)

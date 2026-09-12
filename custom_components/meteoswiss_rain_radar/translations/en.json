@@ -8,11 +8,15 @@
             "description": "Existing precipitation reporting, separate from hail.",
             "data": {
               "radius": "Rain radius (km)",
-              "threshold": "Rain-rate threshold (mm/h)"
+              "threshold": "Rain-rate threshold (mm/h)",
+              "rain_max_age_minutes": "Maximum observation age (minutes)",
+              "rain_poll_seconds": "Poll interval (seconds)"
             },
             "data_description": {
               "radius": "Search around the saved home location (default 5 km). The legacy rain detector rounds fractional radii up to whole grid cells.",
-              "threshold": "Rain is detected only above this rain rate (default 0.2 mm/h), not at the threshold; this is neither a probability nor a five-minute accumulation. Lower values include lighter rain; higher values require heavier rain."
+              "threshold": "Rain is detected only above this rain rate (default 0.2 mm/h), not at the threshold; this is neither a probability nor a five-minute accumulation. Lower values include lighter rain; higher values require heavier rain.",
+              "rain_max_age_minutes": "Observations older than this limit make rain values unknown, not dry weather. Default 10 minutes; range 1–60 minutes. Freshness is rechecked between polls.",
+              "rain_poll_seconds": "Check for new data at this interval (default 60 seconds; range 15–300 seconds). Polling discovers five-minute source updates; it does not create new observations."
             }
           },
           "hail": {
@@ -47,11 +51,15 @@
             "description": "Existing precipitation reporting, separate from hail.",
             "data": {
               "radius": "Rain radius (km)",
-              "threshold": "Rain-rate threshold (mm/h)"
+              "threshold": "Rain-rate threshold (mm/h)",
+              "rain_max_age_minutes": "Maximum observation age (minutes)",
+              "rain_poll_seconds": "Poll interval (seconds)"
             },
             "data_description": {
               "radius": "Search around the saved home location (default 5 km). The legacy rain detector rounds fractional radii up to whole grid cells.",
-              "threshold": "Rain is detected only above this rain rate (default 0.2 mm/h), not at the threshold; this is neither a probability nor a five-minute accumulation. Lower values include lighter rain; higher values require heavier rain."
+              "threshold": "Rain is detected only above this rain rate (default 0.2 mm/h), not at the threshold; this is neither a probability nor a five-minute accumulation. Lower values include lighter rain; higher values require heavier rain.",
+              "rain_max_age_minutes": "Observations older than this limit make rain values unknown, not dry weather. Default 10 minutes; range 1–60 minutes. Freshness is rechecked between polls.",
+              "rain_poll_seconds": "Check for new data at this interval (default 60 seconds; range 15–300 seconds). Polling discovers five-minute source updates; it does not create new observations."
             }
           },
           "hail": {

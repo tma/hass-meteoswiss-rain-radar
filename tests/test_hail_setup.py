@@ -21,12 +21,17 @@ from custom_components.meteoswiss_rain_radar import (
     async_setup_entry,
     async_unload_entry,
 )
-from custom_components.meteoswiss_rain_radar.config_flow import hail_options_schema
+from custom_components.meteoswiss_rain_radar.config_flow import (
+    hail_options_schema,
+    rain_options_schema,
+)
 from custom_components.meteoswiss_rain_radar.const import (
     CONF_HAIL_MAX_AGE,
     CONF_HAIL_POLL,
     CONF_HAIL_RADIUS,
     CONF_HAIL_THRESHOLD,
+    CONF_RAIN_MAX_AGE,
+    CONF_RAIN_POLL,
     DOMAIN,
 )
 from custom_components.meteoswiss_rain_radar.coordinator import (
@@ -95,6 +100,8 @@ async def test_version1_rain_runtime_api_ids_and_hail_entities(hass, setup_entry
         "rain",
         "distance",
         "last_radar",
+        "rain_age",
+        "rain_health",
         "hail",
         "hail_max_poh",
         "hail_distance",
@@ -104,6 +111,10 @@ async def test_version1_rain_runtime_api_ids_and_hail_entities(hass, setup_entry
     }
     assert hass.states.get(suffixes["rain"]).state == "on"
     assert hass.states.get(suffixes["distance"]).state == "2.5"
+    assert hass.states.get(suffixes["rain_health"]).state == "ok"
+    assert (
+        hass.states.get(suffixes["rain_age"]).attributes["unit_of_measurement"] == "min"
+    )
     assert hass.states.get(suffixes["hail"]).state == "on"
     assert (
         hass.states.get(suffixes["hail_max_poh"]).attributes["unit_of_measurement"]
@@ -128,6 +139,7 @@ async def test_version1_rain_runtime_api_ids_and_hail_entities(hass, setup_entry
         assert hass.states.get(suffixes[suffix]).state == STATE_UNKNOWN
     assert hass.states.get(suffixes["hail_health"]).state == "error"
     assert hass.states.get(suffixes["rain"]).state == "on"
+    assert hass.states.get(suffixes["rain_health"]).state == "ok"
 
 
 async def test_options_reload_without_migration_or_id_changes(hass, setup_entry):
@@ -158,7 +170,12 @@ async def test_options_flow_defaults_and_validation(hass, setup_entry):
     result = await hass.config_entries.options.async_init(entry.entry_id)
     defaults = result["data_schema"]({})
     assert defaults == {
-        "rain": {"radius": 5.0, "threshold": 0.2},
+        "rain": {
+            "radius": 5.0,
+            "threshold": 0.2,
+            CONF_RAIN_MAX_AGE: 10.0,
+            CONF_RAIN_POLL: 60.0,
+        },
         "hail": {
             CONF_HAIL_RADIUS: 10.0,
             CONF_HAIL_THRESHOLD: 80.0,
@@ -170,9 +187,14 @@ async def test_options_flow_defaults_and_validation(hass, setup_entry):
         await hass.config_entries.options.async_configure(
             result["flow_id"], user_input={"hail": {CONF_HAIL_THRESHOLD: 101}}
         )
+    with pytest.raises(InvalidData):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"], user_input={"rain": {CONF_RAIN_POLL: 14}}
+        )
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         user_input={
+            "rain": {CONF_RAIN_MAX_AGE: 15, CONF_RAIN_POLL: 90},
             "hail": {
                 CONF_HAIL_RADIUS: 2.5,
                 CONF_HAIL_THRESHOLD: 80,
@@ -185,6 +207,9 @@ async def test_options_flow_defaults_and_validation(hass, setup_entry):
     await hass.async_block_till_done()
     assert entry.options[CONF_HAIL_RADIUS] == 2.5
     assert entry.options["threshold"] == 0.2
+    assert entry.options[CONF_RAIN_MAX_AGE] == 15
+    assert entry.runtime_data.poll_seconds == 90
+    assert entry.runtime_data.max_age_minutes == 15
 
 
 @pytest.mark.parametrize(
@@ -194,6 +219,37 @@ async def test_options_flow_defaults_and_validation(hass, setup_entry):
 def test_hail_options_require_finite_bounded_numbers(key, value):
     with pytest.raises(vol.Invalid):
         vol.Schema(hail_options_schema({}))({key: value})
+
+
+@pytest.mark.parametrize("key", [CONF_RAIN_MAX_AGE, CONF_RAIN_POLL])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), -1, "bad", None, 1000])
+def test_rain_freshness_options_require_finite_bounded_numbers(key, value):
+    with pytest.raises(vol.Invalid):
+        vol.Schema(rain_options_schema({}))({key: value})
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {CONF_RAIN_MAX_AGE: 1, CONF_RAIN_POLL: 15},
+        {CONF_RAIN_MAX_AGE: 60, CONF_RAIN_POLL: 300},
+    ],
+)
+def test_rain_freshness_option_bounds_are_inclusive(values):
+    result = vol.Schema(rain_options_schema({}))(values)
+    assert result[CONF_RAIN_MAX_AGE] == values[CONF_RAIN_MAX_AGE]
+    assert result[CONF_RAIN_POLL] == values[CONF_RAIN_POLL]
+
+
+def test_rain_schema_keeps_saved_legacy_keys_without_new_ranges():
+    saved = {"radius": 0.0, "threshold": -3.5, CONF_RAIN_POLL: 120}
+    result = vol.Schema(rain_options_schema(saved))({})
+    assert result == {
+        "radius": 0.0,
+        "threshold": -3.5,
+        CONF_RAIN_MAX_AGE: 10.0,
+        CONF_RAIN_POLL: 120,
+    }
 
 
 def test_hail_fractional_radius_and_inclusive_percentage_option():
@@ -306,6 +362,8 @@ async def test_rain_inflight_refresh_cannot_rearm_after_unload(
             await hass.async_block_till_done()
             assert rain.last_exception is None
             assert rain._remove_listener is None
+            # A resolved request after stop starts no further HEAD or GET.
+            assert httpx_mock.get_requests() == requests_at_unload
             if outcome == "missing":
                 assert rain.result_data is previous
             else:
@@ -346,7 +404,12 @@ async def test_new_configuration_keeps_rain_defaults_and_current_coordinates(has
         DOMAIN, context={"source": "user"}
     )
     assert result["data_schema"]({}) == {
-        "rain": {"radius": 5.0, "threshold": 0.2},
+        "rain": {
+            "radius": 5.0,
+            "threshold": 0.2,
+            CONF_RAIN_MAX_AGE: 10.0,
+            CONF_RAIN_POLL: 60.0,
+        },
         "hail": {
             CONF_HAIL_RADIUS: 10.0,
             CONF_HAIL_THRESHOLD: 80.0,
@@ -356,11 +419,14 @@ async def test_new_configuration_keeps_rain_defaults_and_current_coordinates(has
     }
     with patch.object(hass.config_entries, "async_setup", AsyncMock(return_value=True)):
         result = await hass.config_entries.flow.async_configure(
-            result["flow_id"], user_input={"rain": {"radius": 5.0, "threshold": 0.2}}
+            result["flow_id"],
+            user_input={"rain": {"radius": 5.0, "threshold": 0.2, CONF_RAIN_POLL: 30}},
         )
         await hass.async_block_till_done()
     assert result["type"] == "create_entry"
     assert result["data"]["latitude"] == result["data"]["longitude"] == 0
+    assert result["data"][CONF_RAIN_POLL] == 30
+    assert result["data"][CONF_RAIN_MAX_AGE] == 10.0
     assert result["result"].version == 1
 
 

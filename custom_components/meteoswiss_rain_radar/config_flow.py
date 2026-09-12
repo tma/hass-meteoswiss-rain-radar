@@ -13,14 +13,30 @@ from .const import (
     CONF_HAIL_RADIUS,
     CONF_HAIL_THRESHOLD,
     CONF_RADIUS,
+    CONF_RAIN_MAX_AGE,
+    CONF_RAIN_POLL,
     CONF_THRESHOLD,
     DEFAULT_HAIL_MAX_AGE,
     DEFAULT_HAIL_POLL,
     DEFAULT_HAIL_RADIUS,
     DEFAULT_HAIL_THRESHOLD,
     DEFAULT_RADIUS,
+    DEFAULT_RAIN_MAX_AGE,
+    DEFAULT_RAIN_POLL,
     DEFAULT_THRESHOLD,
     DOMAIN,
+)
+
+# Key, default, minimum, maximum. Rain and hail share the freshness/poll bounds.
+RAIN_BOUNDED = (
+    (CONF_RAIN_MAX_AGE, DEFAULT_RAIN_MAX_AGE, 1, 60),
+    (CONF_RAIN_POLL, DEFAULT_RAIN_POLL, 15, 300),
+)
+HAIL_BOUNDED = (
+    (CONF_HAIL_RADIUS, DEFAULT_HAIL_RADIUS, 0.1, 100),
+    (CONF_HAIL_THRESHOLD, DEFAULT_HAIL_THRESHOLD, 0, 100),
+    (CONF_HAIL_MAX_AGE, DEFAULT_HAIL_MAX_AGE, 1, 60),
+    (CONF_HAIL_POLL, DEFAULT_HAIL_POLL, 15, 300),
 )
 
 
@@ -69,17 +85,29 @@ def _finite(value):
 
 def hail_options_schema(options, *, include_finite=True):
     """Bound provisional settings; omit the callable only for form rendering."""
+    return _bounded_schema(options, HAIL_BOUNDED, include_finite=include_finite)
+
+
+def rain_options_schema(options, *, include_finite=True):
+    """Keep the legacy radius/threshold keys, add bounded freshness/poll keys."""
+    return {
+        vol.Optional(
+            CONF_RADIUS, default=options.get(CONF_RADIUS, DEFAULT_RADIUS)
+        ): vol.Coerce(float),
+        vol.Optional(
+            CONF_THRESHOLD, default=options.get(CONF_THRESHOLD, DEFAULT_THRESHOLD)
+        ): vol.Coerce(float),
+        **_bounded_schema(options, RAIN_BOUNDED, include_finite=include_finite),
+    }
+
+
+def _bounded_schema(options, fields, *, include_finite=True):
     finite = [_finite] if include_finite else []
     return {
         vol.Optional(key, default=options.get(key, default)): vol.All(
             vol.Coerce(float), *finite, vol.Range(min=minimum, max=maximum)
         )
-        for key, default, minimum, maximum in (
-            (CONF_HAIL_RADIUS, DEFAULT_HAIL_RADIUS, 0.1, 100),
-            (CONF_HAIL_THRESHOLD, DEFAULT_HAIL_THRESHOLD, 0, 100),
-            (CONF_HAIL_MAX_AGE, DEFAULT_HAIL_MAX_AGE, 1, 60),
-            (CONF_HAIL_POLL, DEFAULT_HAIL_POLL, 15, 300),
-        )
+        for key, default, minimum, maximum in fields
     }
 
 
@@ -88,18 +116,7 @@ def settings_schema(options):
     return vol.Schema(
         {
             vol.Optional("rain", default=dict): section(
-                vol.Schema(
-                    {
-                        vol.Optional(
-                            CONF_RADIUS,
-                            default=options.get(CONF_RADIUS, DEFAULT_RADIUS),
-                        ): vol.Coerce(float),
-                        vol.Optional(
-                            CONF_THRESHOLD,
-                            default=options.get(CONF_THRESHOLD, DEFAULT_THRESHOLD),
-                        ): vol.Coerce(float),
-                    }
-                ),
+                vol.Schema(rain_options_schema(options, include_finite=False)),
                 {"collapsed": False},
             ),
             vol.Optional("hail", default=dict): section(

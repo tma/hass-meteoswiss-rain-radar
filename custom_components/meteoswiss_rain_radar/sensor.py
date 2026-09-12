@@ -10,6 +10,7 @@ from homeassistant.const import PERCENTAGE, EntityCategory, UnitOfLength, UnitOf
 
 from .const import DOMAIN
 from .entity import MeteoSwissHailEntity, MeteoSwissRainEntity
+from .models import RAIN_HEALTH
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -35,6 +36,22 @@ RAIN_SENSORS = (
         device_class=SensorDeviceClass.TIMESTAMP,
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:clock-outline",
+    ),
+    RainSensorEntityDescription(
+        key="rain_age",
+        unique_id_suffix="rain_age",
+        name="Rain data age",
+        native_unit_of_measurement=UnitOfTime.MINUTES,
+        device_class=SensorDeviceClass.DURATION,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    RainSensorEntityDescription(
+        key="rain_health",
+        unique_id_suffix="rain_health",
+        name="Rain data health",
+        device_class=SensorDeviceClass.ENUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        options=list(RAIN_HEALTH),
     ),
 )
 
@@ -97,14 +114,23 @@ class RainSensor(MeteoSwissRainEntity, SensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_{description.unique_id_suffix}"
 
     @property
+    def available(self):
+        if self.entity_description.entity_category == EntityCategory.DIAGNOSTIC:
+            return True
+        return super().available
+
+    @property
     def native_value(self):
-        if (result := self.coordinator.data) is None:
-            return None
+        result = self.coordinator.current_result
         match self.entity_description.key:
             case "rain_distance":
                 return result.distance_km
             case "rain_observation":
                 return result.last_update
+            case "rain_age":
+                return result.age_minutes(datetime.now(UTC))
+            case "rain_health":
+                return result.health
         return None
 
 

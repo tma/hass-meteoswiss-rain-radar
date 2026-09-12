@@ -4,21 +4,23 @@
 
 # MeteoSwiss Rain Radar for Home Assistant
 
-This fork adds **reporting-only hail detection** to [deltaecho07's rain radar integration](https://github.com/deltaecho07/hass-meteoswiss-rain-radar). Rain detection behavior and configuration entries stay unchanged. Rain sensor names, default entity IDs and icons now identify the product explicitly.
+This fork adds **reporting-only hail detection** to [deltaecho07's rain radar integration](https://github.com/deltaecho07/hass-meteoswiss-rain-radar). Rain detection geometry and thresholds stay unchanged. Rain now reports the same age and health diagnostics as hail, with its own freshness and poll settings. Rain sensor names, default entity IDs and icons identify the product explicitly.
 
 **No tagged hail release is available yet.** The work is on `feature/hail-reporting` in `tma/hass-meteoswiss-rain-radar`. Upstream `v0.1.3` does not include it. Development verification uses isolated Home Assistant tests, not a live installation or storm validation.
 
 ## Entity interface
 
-The integration exposes **nine Home Assistant entities per entry**, grouped under one device: three existing rain entities and six new hail entities. It adds no custom services or device-control actions.
+The integration exposes **eleven Home Assistant entities per entry**, grouped under one device: five rain entities and six hail entities. It adds no custom services or device-control actions.
 
 These are typical entity IDs; renaming and multiple entries can change them. Use the entity registry to confirm yours.
 
 | Entity ID | Name | Value | Category |
 | --- | --- | --- | --- |
-| `binary_sensor.meteoswiss_rain_radar_rain` | Rain | `on` / `off` | Normal |
+| `binary_sensor.meteoswiss_rain_radar_rain` | Rain | `on` / `off` / unknown | Normal |
 | `sensor.meteoswiss_rain_radar_rain_qualifying_distance` | Rain qualifying distance | km; nearest qualifying rain cell | Normal |
 | `sensor.meteoswiss_rain_radar_rain_observation` | Rain observation | UTC timestamp | Diagnostic |
+| `sensor.meteoswiss_rain_radar_rain_data_age` | Rain data age | minutes | Diagnostic |
+| `sensor.meteoswiss_rain_radar_rain_data_health` | Rain data health | [Health enum](docs/hail.md#entities-and-health) | Diagnostic |
 | `binary_sensor.meteoswiss_rain_radar_hail` | Hail | `on` / `off` / unknown | Normal |
 | `sensor.meteoswiss_rain_radar_hail_maximum_poh` | Hail maximum POH | %; maximum within the radius | Normal |
 | `sensor.meteoswiss_rain_radar_hail_qualifying_distance` | Hail qualifying distance | km; nearest qualifying hail cell, unknown if none | Normal |
@@ -26,11 +28,13 @@ These are typical entity IDs; renaming and multiple entries can change them. Use
 | `sensor.meteoswiss_rain_radar_hail_data_age` | Hail data age | minutes | Diagnostic |
 | `sensor.meteoswiss_rain_radar_hail_data_health` | Hail data health | [Health enum](docs/hail.md#entities-and-health) | Diagnostic |
 
-Names above follow the device name, **MeteoSwiss Rain Radar**, unless customized. Rain uses `mdi:weather-rainy` and hail uses `mdi:weather-hail`; both distances use `mdi:map-marker-distance` and both observations use `mdi:clock-outline`. Units above are native units; Home Assistant may convert hail distance or duration for display. Rain distance keeps its existing km behavior, including on imperial systems. Every hail entity also exposes `observation`, `data_health`, `coverage_complete` and source attribution as attributes.
+Names above follow the device name, **MeteoSwiss Rain Radar**, unless customized. Rain uses `mdi:weather-rainy` and hail uses `mdi:weather-hail`; both distances use `mdi:map-marker-distance` and both observations use `mdi:clock-outline`. Units above are native units; Home Assistant may convert hail distance or duration for display. Rain distance keeps its existing km behavior, including on imperial systems. Every entity exposes `observation`, `data_health` and source attribution as attributes. Only hail entities add `coverage_complete`: the legacy rain reader produces no coverage evidence, so rain health covers the update and the observation age, not radar coverage around your home.
 
 **Breaking entity ID change:** existing default `sensor.meteoswiss_rain_radar_distance` becomes `sensor.meteoswiss_rain_radar_rain_qualifying_distance`, and `sensor.meteoswiss_rain_radar_last_radar_image` becomes `sensor.meteoswiss_rain_radar_rain_observation`. Setup renames those registry entries automatically, including generated numeric duplicates, without replacing their unique IDs. Custom IDs and user metadata are preserved. **Update external automation, script and dashboard references yourself**; this integration doesn't rewrite them. See the [migration rules](docs/hail.md#rain-entity-id-migration) for collisions and rollback.
 
 For hail, `on` requires a fresh qualifying cell; `off` requires fresh, complete coverage below threshold. **Unknown or unavailable is not clear weather.** A qualifying cell can still report `on` with partial coverage, but partial coverage cannot prove `off`. Timestamp, age and health remain diagnostic context when weather values are unknown.
+
+Rain follows the same freshness rule: an observation older than the configured limit, a missing or future timestamp, or a failed update makes rain and rain distance **unknown**, never `off`. A cached frame keeps its own source timestamp; it is never renewed by a poll that found nothing new, and it expires on its own timer without a download. Rain age and health stay readable during outages so automations can see why values are unknown.
 
 POH estimates hail of any size at the ground. A cell at or above 80% within 10 km qualifies by default; this is **not an 80% chance of hail hitting your property**, a forecast or an arrival time. MESHS is not required and has no entity.
 
@@ -45,9 +49,9 @@ Installation and any Home Assistant restart need separate approval. A release or
 1. In HACS, confirm that the tracked repository is `https://github.com/tma/hass-meteoswiss-rain-radar`, type **Integration**, not upstream. Add it through **Custom repositories** if needed.
 2. After the reviewed changes have been pushed, open **Developer tools → Actions**, choose `update.install`, and target the actual HACS update entity for this fork. Set **Version** to the approved full commit SHA, or `feature/hail-reporting` after confirming its current commit. HACS [supports these Version values](https://www.hacs.xyz/docs/use/entities/update/#install-action) without a release; the normal download dialog isn't an arbitrary branch picker. See the [detailed instructions](docs/hail.md#later-hacs-installation), including the optional release route.
 3. Record the installed SHA and disable automatic updates for this integration. This downloads a snapshot, not persistent branch tracking; later normal updates can replace it with `main`.
-4. After the download, restart Home Assistant yourself when approved. **Keep your existing integration entry; don't remove and recreate it.** Open its **Options** to see the expanded **Rain** and **Hail** sections, with units and help for all six settings. New users get the same sections through **Settings → Devices & services → Add Integration → MeteoSwiss Rain Radar**.
+4. After the download, restart Home Assistant yourself when approved. **Keep your existing integration entry; don't remove and recreate it.** Open its **Options** to see the expanded **Rain** and **Hail** sections, with units and help for all eight settings. New users get the same sections through **Settings → Devices & services → Add Integration → MeteoSwiss Rain Radar**.
 
-Rain settings are radius (**km**, default 5) and rain-rate threshold (**mm/h**, default 0.2, strictly above). Hail settings are radius (**km**), inclusive POH threshold (**%**), maximum observation age (**minutes**) and poll interval (**seconds**). Initial hail choices take effect immediately; saving options reloads only that entry. Hail uses the current Home Assistant home location. Read the [settings and rain-reader limitations](docs/hail.md#options) before changing thresholds.
+Rain settings are radius (**km**, default 5), rain-rate threshold (**mm/h**, default 0.2, strictly above), maximum observation age (**minutes**, default 10, range 1–60) and poll interval (**seconds**, default 60, range 15–300). Hail settings are radius (**km**), inclusive POH threshold (**%**), maximum observation age (**minutes**) and poll interval (**seconds**), with the same age and poll ranges. Initial choices take effect immediately; saving options reloads only that entry. Hail uses the current Home Assistant home location, rain the coordinates saved at setup. Read the [settings and rain-reader limitations](docs/hail.md#options) before changing thresholds.
 
 ## Sources and development
 

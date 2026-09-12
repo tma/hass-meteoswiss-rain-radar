@@ -127,7 +127,9 @@ async def test_borrowed_client_request_settings_do_not_mutate_defaults(httpx_moc
         assert (await hail.discover(OBSERVATION)).health == "ok"
         with pytest.raises(httpx.HTTPStatusError):
             await hail.discover(OBSERVATION)
-        assert not await rain.radar_exists(OBSERVATION)
+        # An unfollowed redirect is a failure, not an absent radar file.
+        with pytest.raises(httpx.HTTPStatusError):
+            await rain.radar_exists(OBSERVATION)
         with pytest.raises(httpx.HTTPStatusError):
             await rain.fetch_radar(OBSERVATION)
         for request in httpx_mock.get_requests():

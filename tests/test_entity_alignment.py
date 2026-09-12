@@ -25,6 +25,8 @@ ENTITIES = (
     ("rain", "binary_sensor", "Rain", "mdi:weather-rainy", None),
     ("distance", "sensor", "Rain qualifying distance", "mdi:map-marker-distance", None),
     ("last_radar", "sensor", "Rain observation", "mdi:clock-outline", "diagnostic"),
+    ("rain_age", "sensor", "Rain data age", None, "diagnostic"),
+    ("rain_health", "sensor", "Rain data health", None, "diagnostic"),
     ("hail", "binary_sensor", "Hail", "mdi:weather-hail", None),
     ("hail_max_poh", "sensor", "Hail maximum POH", None, None),
     (
@@ -117,7 +119,7 @@ async def test_new_entity_interface_and_legacy_rain_availability(
     hass.config.units = units
     entry = await load_entry()
     entities = registry_entries(hass, entry)
-    assert len(entities) == 9
+    assert len(entities) == 11
     for suffix, domain, name, icon, category in ENTITIES:
         entity = entities[suffix]
         assert entity.entity_id == f"{domain}.{PREFIX}{name.lower().replace(' ', '_')}"
@@ -135,8 +137,14 @@ async def test_new_entity_interface_and_legacy_rain_availability(
     rain.async_set_update_error(RuntimeError("rain outage"))
     rain.hail_coordinator.async_set_update_error(RuntimeError("hail outage"))
     await hass.async_block_till_done()
-    assert hass.states.get(entities["last_radar"].entity_id).state == "unavailable"
+    # Rain diagnostics now stay readable on a coordinator failure, like hail.
+    assert (
+        hass.states.get(entities["last_radar"].entity_id).state
+        == OBSERVATION.isoformat()
+    )
     assert entities["last_radar"].entity_category == EntityCategory.DIAGNOSTIC
+    assert hass.states.get(entities["rain_health"].entity_id).state == "error"
+    assert hass.states.get(entities["rain"].entity_id).state == "unavailable"
     assert (
         hass.states.get(entities["hail_observation"].entity_id).state
         == OBSERVATION.isoformat()
@@ -160,7 +168,7 @@ async def test_upgrade_renames_exactly_two_ids_and_reload_is_idempotent(
     try:
         await load_entry(entry)
         after = registry_entries(hass, entry)
-        assert len(before) == len(after) == 9
+        assert len(before) == len(after) == 11
         for suffix, entity in before.items():
             assert after[suffix].id == entity.id
             assert after[suffix].unique_id == entity.unique_id
@@ -219,7 +227,7 @@ async def test_two_entries_keep_numeric_ids_without_overwriting_collisions(
             ending = f"_{number}" if number > 1 else ""
             assert after[key].entity_id == f"sensor.{PREFIX}{suffix}{ending}"
             assert after[key].id == before[index][key].id
-        assert len(after) == 9
+        assert len(after) == 11
     for entity in occupied:
         assert registry.async_get(entity.entity_id) == entity
     if collision:

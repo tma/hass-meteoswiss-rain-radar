@@ -242,7 +242,12 @@ async def test_native_form_section_translations_labels_units_and_help(
     translated = await async_get_translations(hass, "en", category, {DOMAIN})
     prefix = f"component.{DOMAIN}.{category}.step.{step}.sections"
     units = {
-        "rain": {"radius": "km", "threshold": "mm/h"},
+        "rain": {
+            "radius": "km",
+            "threshold": "mm/h",
+            "rain_max_age_minutes": "minutes",
+            "rain_poll_seconds": "seconds",
+        },
         "hail": {
             "hail_radius_km": "km",
             "hail_poh_threshold": "%",
@@ -270,6 +275,8 @@ async def test_native_form_section_translations_labels_units_and_help(
     assert "lighter" in rain_help["threshold"] and "heavier" in rain_help["threshold"]
     assert "five-minute accumulation" in rain_help["threshold"]
     assert "rounds fractional radii up" in rain_help["radius"]
+    assert "unknown" in rain_help["rain_max_age_minutes"]
+    assert "does not create new observations" in rain_help["rain_poll_seconds"]
     hail_help = sections["hail"]["data_description"]
     assert "true circle" in hail_help["hail_radius_km"]
     assert "current Home Assistant home" in hail_help["hail_radius_km"]

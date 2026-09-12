@@ -26,7 +26,12 @@ from .test_hail_setup import MODULE, make_entry
 from .test_hail_setup import setup_entry as setup_entry
 
 DEFAULT_SETTINGS = {
-    "rain": {"radius": 5.0, "threshold": 0.2},
+    "rain": {
+        "radius": 5.0,
+        "threshold": 0.2,
+        "rain_max_age_minutes": 10.0,
+        "rain_poll_seconds": 60.0,
+    },
     "hail": {
         "hail_radius_km": 10.0,
         "hail_poh_threshold": 80.0,
@@ -43,6 +48,12 @@ HAIL_BOUNDS = {
     "hail_max_age_minutes": (1, 60),
     "hail_poll_seconds": (15, 300),
 }
+RAIN_BOUNDS = {"rain_max_age_minutes": (1, 60), "rain_poll_seconds": (15, 300)}
+# Legacy rain radius/threshold deliberately keep no ranges.
+BOUNDS = {"rain": RAIN_BOUNDS, "hail": HAIL_BOUNDS}
+BOUNDED_FIELDS = [
+    (section, key) for section, bounds in BOUNDS.items() for key in bounds
+]
 
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
 
@@ -108,10 +119,9 @@ def assert_form_schema(rendered, defaults=DEFAULT_SETTINGS):
         for field in fields:
             assert field["type"] == "float"
             assert math.isfinite(field["default"])
-            if section["name"] == "hail":
-                assert (field["valueMin"], field["valueMax"]) == HAIL_BOUNDS[
-                    field["name"]
-                ]
+            bounds = BOUNDS[section["name"]].get(field["name"])
+            if bounds is not None:
+                assert (field["valueMin"], field["valueMax"]) == bounds
             else:
                 assert "valueMin" not in field and "valueMax" not in field
 
@@ -132,8 +142,9 @@ async def test_nonfinite_submission_http_never_saves_or_breaks_error_form(
     url = f"/api/config/config_entries/{path}/{flow_id}"
     response = await flow_client.post(url, json={section_name: {key: value}})
     # Range rejection happens before the step. NaN handling varies by Voluptuous.
-    allowed_statuses = (200,) if section_name == "rain" else (400,)
-    if section_name == "hail" and value == "nan":
+    bounded = key in BOUNDS[section_name]
+    allowed_statuses = (400,) if bounded else (200,)
+    if bounded and value == "nan":
         allowed_statuses = (200, 400)
     assert response.status in allowed_statuses
     rendered = await response.json()
@@ -164,9 +175,10 @@ async def test_nonfinite_submission_http_never_saves_or_breaks_error_form(
 @pytest.mark.parametrize(
     "payload",
     [
-        {"hail": {key: value}}
-        for key, bounds in HAIL_BOUNDS.items()
-        for value in (bounds[0] - 0.01, bounds[1] + 0.01)
+        {section: {key: value}}
+        for section, bounds in BOUNDS.items()
+        for key, limits in bounds.items()
+        for value in (limits[0] - 0.01, limits[1] + 0.01)
     ]
     + [{section: {key: "bad"}} for section, key in FIELDS]
     + [{"rain": None}, {"hail": []}],
@@ -193,9 +205,7 @@ async def test_invalid_shape_type_or_bounds_returns_http400(
 
 @pytest.mark.parametrize("flow_kind", ["config", "options"])
 @pytest.mark.parametrize("boundary", [0, 1])
-async def test_hail_bounds_are_inclusive_and_storage_stays_flat(
-    hass, flow_kind, boundary
-):
+async def test_bounds_are_inclusive_and_storage_stays_flat(hass, flow_kind, boundary):
     if flow_kind == "config":
         manager = hass.config_entries.flow
         result = await manager.async_init(DOMAIN, context={"source": "user"})
@@ -203,7 +213,9 @@ async def test_hail_bounds_are_inclusive_and_storage_stays_flat(
         manager = hass.config_entries.options
         result = await manager.async_init(make_entry(hass).entry_id)
     hail = {key: bounds[boundary] for key, bounds in HAIL_BOUNDS.items()}
-    rain = {"radius": -0.25, "threshold": -0.1}  # No new legacy rain ranges.
+    rain = {key: bounds[boundary] for key, bounds in RAIN_BOUNDS.items()}
+    # No new legacy rain ranges.
+    rain.update(radius=-0.25, threshold=-0.1)
     with patch.object(hass.config_entries, "async_setup", AsyncMock(return_value=True)):
         result = await manager.async_configure(
             result["flow_id"], user_input={"rain": rain, "hail": hail}
@@ -244,7 +256,12 @@ async def test_initial_hail_values_reach_real_coordinator(hass, freezer, httpx_m
         "hail_max_age_minutes": 3,
         "hail_poll_seconds": 120,
     }
-    rain = {"radius": 2.5, "threshold": 0.4}
+    rain = {
+        "radius": 2.5,
+        "threshold": 0.4,
+        "rain_max_age_minutes": 4,
+        "rain_poll_seconds": 150,
+    }
     calls = []
 
     def reader(*args):
@@ -269,6 +286,9 @@ async def test_initial_hail_values_reach_real_coordinator(hass, freezer, httpx_m
         try:
             assert entry.options == hail
             assert entry.data == {**rain, "latitude": 0, "longitude": 0}
+            rain_coordinator = entry.runtime_data
+            assert rain_coordinator.poll_seconds == 150
+            assert rain_coordinator.max_age_minutes == 4
             coordinator = entry.runtime_data.hail_coordinator
             assert coordinator.poll_seconds == 120
             assert coordinator.update_interval == timedelta(seconds=120)
@@ -342,7 +362,7 @@ async def test_old_entry_options_reopen_reload_and_isolation(hass, setup_entry):
         assert_form_schema(
             rendered,
             {
-                "rain": {"radius": 7.5, "threshold": 0.2},
+                "rain": {**DEFAULT_SETTINGS["rain"], "radius": 7.5},
                 "hail": {**DEFAULT_SETTINGS["hail"], "hail_poll_seconds": 90},
             },
         )
@@ -371,7 +391,7 @@ async def test_numeric_nonfinite_cannot_reach_storage(
             flow_id, user_input={section_name: {key: value}}
         )
     except InvalidData as err:
-        assert section_name == "hail"
+        assert key in BOUNDS[section_name]
         assert err.schema_errors
         result = await manager.async_configure(flow_id)
     else:
@@ -387,9 +407,9 @@ async def test_numeric_nonfinite_cannot_reach_storage(
 
 
 @pytest.mark.parametrize("flow_kind", ["config", "options"])
-@pytest.mark.parametrize("key", HAIL_BOUNDS)
+@pytest.mark.parametrize("section_name,key", BOUNDED_FIELDS)
 async def test_post_submission_check_rejects_nan_even_if_range_allows_it(
-    hass, flow_kind, key
+    hass, flow_kind, section_name, key
 ):
     if flow_kind == "config":
         manager = hass.config_entries.flow
@@ -400,7 +420,7 @@ async def test_post_submission_check_rejects_nan_even_if_range_allows_it(
     # Simulate older/permissive Range implementations without altering display.
     with patch.object(vol.Range, "__call__", lambda self, value: value):
         result = await manager.async_configure(
-            result["flow_id"], user_input={"hail": {key: "nan"}}
+            result["flow_id"], user_input={section_name: {key: "nan"}}
         )
     assert result["type"] == "form"
     assert result["errors"] == {"base": "invalid_options"}

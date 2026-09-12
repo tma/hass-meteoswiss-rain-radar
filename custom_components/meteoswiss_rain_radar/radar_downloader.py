@@ -53,6 +53,7 @@ class RadarDownloader:
         self,
         timestamp: datetime,
     ) -> bool:
+        """404 means not published yet; other statuses are failures, not absence."""
         _, url = self.build_url(timestamp)
         client = await self._get_client()
         response = await client.head(
@@ -61,7 +62,16 @@ class RadarDownloader:
             timeout=30,
             follow_redirects=False,
         )
-        return response.status_code == 200
+        if response.status_code == 200:
+            return True
+        if response.status_code == 404:
+            return False
+        response.raise_for_status()
+        raise httpx.HTTPStatusError(
+            f"Unexpected rain radar status {response.status_code} for {url}",
+            request=response.request,
+            response=response,
+        )
 
     async def fetch_radar(
         self,

@@ -16,9 +16,8 @@ class RainBinarySensor(MeteoSwissRainEntity, BinarySensorEntity):
 
     @property
     def is_on(self):
-        if self.coordinator.data is None:
-            return False
-        return self.coordinator.data.rain
+        # Unusable data is unknown, never a claim of no rain.
+        return self.coordinator.current_result.rain
 
 
 class HailBinarySensor(MeteoSwissHailEntity, BinarySensorEntity):

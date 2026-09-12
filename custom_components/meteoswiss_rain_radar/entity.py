@@ -12,6 +12,7 @@ class MeteoSwissRadarEntity(
     CoordinatorEntity,
 ):
     _attr_has_entity_name = True
+    _attr_attribution = "Source: MeteoSwiss"
 
     def __init__(
         self,
@@ -42,12 +43,22 @@ class MeteoSwissRadarEntity(
 
 
 class MeteoSwissRainEntity(MeteoSwissRadarEntity):
-    """Rain entities using the legacy coordinator's state and availability."""
+    """Rain entities: health covers update success and observation age only.
+
+    The legacy rain reader reports no coverage evidence, so rain deliberately has
+    no `coverage_complete` attribute and no coverage health state.
+    """
+
+    @property
+    def extra_state_attributes(self):
+        result = self.coordinator.current_result
+        return {
+            "data_health": result.health,
+            "observation": result.last_update,
+        }
 
 
 class MeteoSwissHailEntity(MeteoSwissRadarEntity):
-    _attr_attribution = "Source: MeteoSwiss"
-
     @property
     def extra_state_attributes(self):
         result = self.coordinator.current_result

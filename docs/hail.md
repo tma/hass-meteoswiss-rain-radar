@@ -26,18 +26,30 @@ Unchanged HDF5 assets are cached by URL plus SHA256; a changed checksum at the s
 
 ## Options
 
-Initial setup and the entry's **Options** both show expanded **Rain** and **Hail** sections. All six fields have units in their labels and help explaining their meaning. Initial hail choices take effect immediately; saving options reloads only that entry. Keep existing version-1 entries: unique IDs and flat storage keys are unchanged, so no configuration-entry migration or recreation is needed. Two default rain entity IDs are [renamed automatically](#rain-entity-id-migration). Options take precedence over saved rain data when reopening the form.
+Initial setup and the entry's **Options** both show expanded **Rain** and **Hail** sections. All eight fields have units in their labels and help explaining their meaning. Initial choices take effect immediately; saving options reloads only that entry. Keep existing version-1 entries: unique IDs and flat storage keys are unchanged, so no configuration-entry migration or recreation is needed. Entries saved before the rain freshness settings existed simply use the defaults. Two default rain entity IDs are [renamed automatically](#rain-entity-id-migration). Options take precedence over saved rain data when reopening the form.
 
 ### Rain
 
-| Setting / stored key | Unit | Default | Meaning |
+| Setting / stored key | Unit | Default | Range and meaning |
 | --- | --- | --- | --- |
 | Rain radius / `radius` | km | 5 | Search around the saved home location. The legacy detector rounds fractional radii up to whole grid cells, unlike hail's true circle. |
 | Rain-rate threshold / `threshold` | mm/h | 0.2 | Rain requires a value **strictly above** the threshold. Lower values include lighter rain; higher values require heavier rain. |
+| Maximum observation age / `rain_max_age_minutes` | minutes | 10 | 1–60; older observations make rain values unknown, not dry weather. |
+| Poll interval / `rain_poll_seconds` | seconds | 60 | 15–300; discovers five-minute source updates, not new observations on every poll. |
+
+The two freshness settings are new and share hail's ranges; radius and threshold keep their saved keys and have no ranges. An observation exactly at the maximum age is still fresh. Rain keeps the coordinates saved at initial setup, unlike hail.
 
 Rain rate is not a probability or five-minute accumulation. The [official precipitation product documentation](https://opendatadocs.meteoswiss.ch/d-radar-data/d1-precipitation-radar-products) describes RZC/PRECIP as instantaneous `Rain_Rate` in mm/h. The inspected [2026-09-09 09:45 UTC RZC file](https://data.geo.admin.ch/ch.meteoschweiz.ogd-radar-precip/20260909-ch/rzc262520945vl.001.h5) confirms `quantity=RATE`, `unit=mm/h`, gain 1, offset 0, NaN no-data and zero undetect in `/dataset1/data1/what` (223,335 bytes; SHA256 `b50340942fd5f8699ba7d344f30744b73b44887bdea0cd61e3027a9fa53d4340`).
 
-The unchanged rain reader compares float32 raw values with `>`; values at 0.2 don't qualify at the default threshold. It **does not apply or validate gain/offset/unit metadata or explicitly mask no-data**. The mm/h label matches the current encoding, not a new parser guarantee. Hail's decoding, geometry and freshness guarantees do not apply to the legacy rain path. Rain inputs must be finite; no new rain ranges were added.
+The unchanged rain reader compares float32 raw values with `>`; values at 0.2 don't qualify at the default threshold. It **does not apply or validate gain/offset/unit metadata or explicitly mask no-data**. The mm/h label matches the current encoding, not a new parser guarantee. Hail's decoding, geometry and coverage guarantees do not apply to the legacy rain path. Rain inputs must be finite; radius and threshold have no ranges.
+
+### Rain freshness and polling
+
+Rain checks for a new frame every `rain_poll_seconds`, replacing the earlier fixed schedule that fired just after each five-minute slot. Each check asks for the current five-minute frame and, if that isn't published yet, for the one before it. The search stops there: no further history, and no candidate older than `rain_max_age_minutes`. Without that single step back, a 300-second poll can land before publication every time and never see an available frame.
+
+Observation timestamps come from the source frame, never from the poll. An already downloaded frame isn't fetched again, so same-time source corrections to it aren't picked up. A poll that finds nothing new keeps the cached observation and its original timestamp; freshness is re-evaluated on every entity read and published again by an expiry timer at `observation + rain_max_age_minutes`, without a download. Age keeps advancing through missing and failed periods because failures are reported as health instead of raising, so the coordinator keeps publishing and polling.
+
+A 404 means the frame isn't published yet. Any other status, redirect, transport failure, timeout or decoding error is `error`, not absence, and stays latched until a download succeeds; an unpublished next frame can't restore a previous reading. Re-fetching the cached frame is a valid recovery and keeps its original timestamp. Decoding and the cell search run in an executor, off the event loop. Unloading cancels both timers and starts no new request; a request already in flight may finish, but it can't rearm a timer.
 
 ### Hail
 
@@ -51,7 +63,6 @@ Hail uses the current Home Assistant home location, not the coordinates saved at
 | Poll interval / `hail_poll_seconds` | seconds | 60 | 15–300; discovers five-minute source updates, not new observations on every poll. |
 
 All hail inputs must be finite numbers. An observation exactly at the maximum age is accepted; older data is stale. A threshold of 0 also qualifies valid zero-valued cells, so it is not a useful hail-alert setting. A larger radius can introduce partial coverage.
-
 These defaults are **provisional, not validated safety settings**. Reporting is immediate on receipt of a fresh qualifying observation; there is no eight-minute wait option. The proposed 30-minute clear period is a later automation requirement, not an integration option or implemented timer.
 
 ### Evidence behind the provisional settings
@@ -64,13 +75,15 @@ The guidance supports avoiding a MESHS size gate and delaying release to avoid r
 
 ## Entities and health
 
-All nine rain/hail entities share the existing device. Unique IDs are the configuration entry ID followed by the suffix below; Home Assistant entity IDs can differ after renaming or with multiple entries. Check the entity registry rather than constructing IDs from these suffixes. The [README table](../README.md#entity-interface) lists default entity IDs.
+All eleven rain/hail entities share the existing device. Unique IDs are the configuration entry ID followed by the suffix below; Home Assistant entity IDs can differ after renaming or with multiple entries. Check the entity registry rather than constructing IDs from these suffixes. The [README table](../README.md#entity-interface) lists default entity IDs.
 
 | Name | Unique ID suffix | State/unit | Category | Explicit icon |
 | --- | --- | --- | --- | --- |
-| Rain | `_rain` | `on` or `off` | Normal | `mdi:weather-rainy` |
+| Rain | `_rain` | `on`, `off` or unknown | Normal | `mdi:weather-rainy` |
 | Rain qualifying distance | `_distance` | km | Normal | `mdi:map-marker-distance` |
 | Rain observation | `_last_radar` | UTC timestamp | Diagnostic | `mdi:clock-outline` |
+| Rain data age | `_rain_age` | minutes (`min`) | Diagnostic | Unchanged default |
+| Rain data health | `_rain_health` | enum below | Diagnostic | Unchanged default |
 | Hail | `_hail` | `on`, `off` or unknown | Normal | `mdi:weather-hail` |
 | Hail maximum POH | `_hail_max_poh` | % | Normal | Unchanged default |
 | Hail qualifying distance | `_hail_distance` | km | Normal | `mdi:map-marker-distance` |
@@ -78,29 +91,31 @@ All nine rain/hail entities share the existing device. Unique IDs are the config
 | Hail data age | `_hail_age` | minutes (`min`) | Diagnostic | Unchanged default |
 | Hail data health | `_hail_health` | enum below | Diagnostic | Unchanged default |
 
-Rain observation is now diagnostic, matching hail observation's category, but retains its legacy availability: a failed rain coordinator makes it unavailable. Hail diagnostics remain readable on a coordinator failure. Rain distance deliberately has no distance device class, so it still displays km under imperial preferences; hail's existing distance conversion is unchanged. Detection and qualifying distances remain normal entities. This presentation refactor does not align the products' different decoding, geometry, thresholds or freshness rules.
+The two rain diagnostics are new entities with new unique IDs; the three existing rain identities are unchanged. Rain diagnostics stay readable when the rain coordinator fails, matching hail. This is a change from the previous release, where a failed rain coordinator also made the rain observation unavailable. Rain distance deliberately has no distance device class, so it still displays km under imperial preferences; hail's existing distance conversion is unchanged. Detection and qualifying distances remain normal entities. Rain and hail still use different decoding, geometry and thresholds; only the age and health presentation is aligned.
 
-Every hail entity exposes `data_health`, `coverage_complete` and `observation` attributes, plus `Source: MeteoSwiss` attribution. Timestamp, age and health are diagnostics. On failure, a retained timestamp is only diagnostic context, not evidence that cached weather is usable. Future or absent timestamps have no numeric age. The age entity updates with entity refreshes, not continuously; automations should calculate age from the observation and `now()`, never from `last_changed`, a poll time or a download time.
+Every entity exposes `data_health` and `observation` attributes plus `Source: MeteoSwiss` attribution. Only hail adds `coverage_complete`, because only the hail reader measures coverage. Timestamp, age and health are diagnostics. On failure, a retained timestamp is only diagnostic context, not evidence that cached weather is usable. Future or absent timestamps have no numeric age. The age entities update with entity refreshes, not continuously; automations should calculate age from the observation and `now()`, never from `last_changed`, a poll time or a download time.
+
+Rain health uses five of the values below: `ok`, `missing`, `stale`, `future` and `error`. The coverage and season states are hail-only, and **rain `ok` does not mean the radius is fully covered**: the legacy rain reader silently skips cells outside the grid, so rain health describes the update and the observation age, nothing else.
 
 | Health | Meaning and weather states |
 | --- | --- |
-| `ok` | Fresh, complete circle coverage. Detection is `on` if any cell qualifies, otherwise `off`. Maximum POH can legitimately be 0%. Distance is unknown when no cell qualifies, never a substitute zero. |
-| `partial_coverage` | The circle extends beyond the grid or contains missing cells. A valid qualifying cell can still report `on` and a distance. Without one, detection is unknown, **not `off`**. A positive observed maximum can be shown, but it is incomplete (`coverage_complete: false`); a partial zero maximum is unknown. |
-| `outside_grid` | Home location is outside the raster extent, even if the radius overlaps it. No weather values. |
-| `no_cells` | The circle contains no cell centers. No weather values. |
-| `all_nodata` | Selected cells are all no-data/nonfinite. No weather values. |
-| `empty` | Empty bytes or an empty supported HDF5 product. No weather values. Malformed files are `error`, not `empty`. |
-| `off_season` | Current UTC date or observation is outside April–September. No weather values; not an assurance of no hail. |
+| `ok` | Fresh data. For hail: complete circle coverage, detection `on` if any cell qualifies, otherwise `off`; maximum POH can legitimately be 0%, and distance is unknown when no cell qualifies, never a substitute zero. For rain: a fresh frame was decoded and searched, with no coverage claim. |
+| `partial_coverage` | Hail only. The circle extends beyond the grid or contains missing cells. A valid qualifying cell can still report `on` and a distance. Without one, detection is unknown, **not `off`**. A positive observed maximum can be shown, but it is incomplete (`coverage_complete: false`); a partial zero maximum is unknown. |
+| `outside_grid` | Hail only. Home location is outside the raster extent, even if the radius overlaps it. No weather values. |
+| `no_cells` | Hail only. The circle contains no cell centers. No weather values. |
+| `all_nodata` | Hail only. Selected cells are all no-data/nonfinite. No weather values. |
+| `empty` | Hail only. Empty bytes or an empty supported HDF5 product. No weather values. Malformed files are `error`, not `empty`. |
+| `off_season` | Hail only. Current UTC date or observation is outside April–September. No weather values; not an assurance of no hail. |
 | `missing` | No eligible observation was found, or reporting has no result yet. No weather values. |
-| `stale` | Observation age exceeds the configured limit. Timestamp and age can remain visible; detection, POH and distance are unknown. |
+| `stale` | Observation age exceeds the configured limit. Timestamp and age can remain visible; weather values are unknown. |
 | `future` | Only future assets were found, or a clock reversal makes the observation future-dated. Timestamp may remain visible, but age and weather values are unknown. |
-| `error` | Request, checksum, metadata, decoding or other update failure. Even a fresh cached result cannot certify weather. No weather values. |
+| `error` | Request, status, checksum, metadata, decoding or other update failure. Even a fresh cached result cannot certify weather. No weather values. Rain keeps this state until a download succeeds. |
 
 Normal handled failures produce `unknown` weather states with readable health. An unexpected coordinator failure can make weather entities `unavailable`; diagnostics remain readable while loaded. Treat both `unknown` and `unavailable` as no evidence. Don't coerce either to `off` or numeric zero. Only complete, fresh `ok` observations below threshold provide clear samples, and **one clear sample never releases protection**.
 
 ## Rain entity ID migration
 
-**Breaking change:** rain metrics now have product-prefixed names and default Home Assistant entity IDs. This replaces the earlier plan to preserve all entity IDs; registry unique IDs still stay unchanged.
+**Breaking change:** rain metrics have product-prefixed names and default Home Assistant entity IDs. This replaces the earlier plan to preserve all entity IDs; registry unique IDs still stay unchanged. Rain also gained two new diagnostic entities, `sensor.meteoswiss_rain_radar_rain_data_age` and `sensor.meteoswiss_rain_radar_rain_data_health`, which are created normally rather than migrated.
 
 | Old name / default entity ID | New name / default entity ID | Retained unique ID suffix |
 | --- | --- | --- |
@@ -110,6 +125,8 @@ Normal handled failures produce `unknown` weather states with readable health. A
 Setup uses Home Assistant's entity registry before platform registration. Only sensors owned by this integration and configuration entry, with these two known unique IDs and exact legacy default IDs, are renamed. Generated numeric suffixes such as `_2` are accepted and retained when free. If a target is occupied by another registry entry or current state, Home Assistant allocates a free numeric ID without overwriting it. Repeated setup and options reloads leave the migrated IDs alone.
 
 Custom entity IDs outside those legacy patterns are left alone. Home Assistant doesn't record whether an ID matching a generated default was manually chosen; exact defaults and ordinary numeric duplicates are treated as defaults. Custom friendly names, icons, aliases, disabled/hidden state, area and other user metadata are preserved, including when a default ID is migrated. Rain/Hail binary IDs and all existing hail IDs are unchanged. New installations get the new names and IDs directly.
+
+Rain behavior changed with these diagnostics: `binary_sensor.meteoswiss_rain_radar_rain` is now `unknown` instead of `off` when the data is stale, missing, future-dated or failed, and the rain observation stays readable during a coordinator failure. **Automations that treated `off` as “no rain” now need to handle `unknown` too.**
 
 **Update references to the old IDs in your automations, scripts, templates and dashboards.** Check the resulting registry IDs, especially with multiple entries or collisions. This integration does not rewrite external configuration files or add forwarding entities. Keep the version-1 entry: no version bump, duplicate entry or identity replacement is needed. Rolling back code keeps the same unique IDs and registry entries, but does not undo the entity ID rename or your reference edits; don't assume the old IDs return automatically.
 
@@ -176,7 +193,7 @@ After the reviewed changes are pushed and installation is approved, HACS can dow
 
 1. Confirm that HACS tracks `https://github.com/tma/hass-meteoswiss-rain-radar`, type **Integration**, through [Custom repositories](https://www.hacs.xyz/docs/faq/custom_repositories/). The integration name remains **MeteoSwiss Rain Radar**. A branch must belong to the tracked repository: targeting the upstream update entity cannot install this fork's branch. Use the repository URL, not a `/tree/feature/hail-reporting` URL.
 2. In **Developer tools → Actions**, select `update.install` and target the actual HACS update entity belonging to this fork. Set **Version** to the approved **full commit SHA** for an exact snapshot, or `feature/hail-reporting` after verifying its current SHA. `APPROVED_FULL_COMMIT_SHA` is a placeholder for the reviewed, pushed revision, not a literal Version value; no future commit is assumed here. HACS documents this advanced [Install action](https://www.hacs.xyz/docs/use/entities/update/#install-action) for public branches and full SHAs as well as tags.
-3. Execute the download only when approved, then restart Home Assistant yourself. **Keep the existing integration entry; don't remove and recreate it.** Open the entry's **Options** and confirm both expanded sections, **Rain** and **Hail**, with units and help on all six fields. New entries use the same form at initial setup. Saving options reloads that entry. The first setup of this revision applies the [rain ID migration](#rain-entity-id-migration); subsequent reloads retain the resulting IDs.
+3. Execute the download only when approved, then restart Home Assistant yourself. **Keep the existing integration entry; don't remove and recreate it.** Open the entry's **Options** and confirm both expanded sections, **Rain** and **Hail**, with units and help on all eight fields. New entries use the same form at initial setup. Saving options reloads that entry. The first setup of this revision applies the [rain ID migration](#rain-entity-id-migration); subsequent reloads retain the resulting IDs.
 4. Record the installed SHA and keep automatic updates disabled for this integration. Installing a branch downloads its current snapshot; it does **not** establish persistent branch tracking or an immutable revision lock. Later normal updates can replace the snapshot with `main`, so review updates before accepting them. If HACS rejects a revision or reports incompatibility, stop rather than substituting “latest”.
 
 An approved release/tag remains an optional route. HACS documents **Download / Redownload → Need a different version?** for [available versions](https://www.hacs.xyz/docs/use/repositories/dashboard/#downloading-a-specific-version-of-a-repository); that normal dialog isn't an arbitrary branch/SHA picker. Record the full SHA and verify the tag-to-SHA mapping, since ordinary tags can move. Neither route requires removing the integration entry. These are user-run instructions, not live Home Assistant actions performed by development tests.

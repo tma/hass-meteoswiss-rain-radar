@@ -16,7 +16,6 @@ from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.meteoswiss_rain_radar.const import (
@@ -43,7 +42,7 @@ def make_entry(**data_overrides) -> MockConfigEntry:
 
 
 @pytest.fixture
-def coordinator(hass):
+async def coordinator(hass):
     entry = make_entry()
     entry.add_to_hass(hass)
     with patch(f"{MODULE}.RadarDownloader"), patch(f"{MODULE}.RainDetector"):
@@ -57,7 +56,8 @@ def coordinator(hass):
         return_value=("some.h5", "https://example.com/some.h5")
     )
     coord.detector = MagicMock()
-    return coord
+    yield coord
+    await coord.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +75,8 @@ def test_init_sets_up_attributes(hass):
     assert coord.entry is entry
     assert coord.name == DOMAIN
     assert coord._remove_listener is None
+    assert coord._cancel_expiry is None
+    assert coord.poll_seconds == 60 and coord.max_age_minutes == 10
 
 
 # ---------------------------------------------------------------------------
@@ -115,45 +117,40 @@ async def test_stop_without_listener_does_not_raise(coordinator):
 # ---------------------------------------------------------------------------
 
 
-def test_schedule_next_update_retry_adds_15_seconds(coordinator, freezer):
+def test_schedule_next_update_uses_configured_poll_interval(coordinator, freezer):
     now = datetime(2024, 1, 1, 10, 7, 30, tzinfo=UTC)
     freezer.move_to(now)
 
     with patch(f"{MODULE}.async_track_point_in_utc_time") as mock_track:
-        coordinator._schedule_next_update(retry=True)
+        coordinator._schedule_next_update()
 
-    expected_when = now + timedelta(seconds=15)
+    expected_when = now + timedelta(seconds=60)
     mock_track.assert_called_once_with(
         coordinator.hass, coordinator._scheduled_refresh, expected_when
     )
     assert coordinator._remove_listener is mock_track.return_value
 
 
-def test_schedule_next_update_rounds_up_to_next_5_minutes(coordinator, freezer):
+def test_schedule_next_update_honours_changed_poll_option(coordinator, freezer):
     now = datetime(2024, 1, 1, 10, 7, 30, tzinfo=UTC)
     freezer.move_to(now)
+    coordinator.poll_seconds = 300
 
     with patch(f"{MODULE}.async_track_point_in_utc_time") as mock_track:
         coordinator._schedule_next_update()
 
-    expected_when = now.replace(minute=10, second=50, microsecond=0)
-    mock_track.assert_called_once_with(
-        coordinator.hass, coordinator._scheduled_refresh, expected_when
-    )
+    assert mock_track.call_args.args[2] == now + timedelta(seconds=300)
 
 
-def test_schedule_next_update_rolls_over_to_next_hour(coordinator, freezer):
-    # minute=57 -> (57 // 5 + 1) * 5 == 60 -> should roll into the next hour.
-    now = datetime(2024, 1, 1, 10, 57, 0, tzinfo=UTC)
-    freezer.move_to(now)
+def test_schedule_next_update_does_nothing_after_stop(coordinator, freezer):
+    freezer.move_to(datetime(2024, 1, 1, 10, 0, 0, tzinfo=UTC))
+    coordinator._stopped = True
 
     with patch(f"{MODULE}.async_track_point_in_utc_time") as mock_track:
         coordinator._schedule_next_update()
 
-    expected_when = now.replace(minute=0, second=50, microsecond=0) + timedelta(hours=1)
-    mock_track.assert_called_once_with(
-        coordinator.hass, coordinator._scheduled_refresh, expected_when
-    )
+    mock_track.assert_not_called()
+    assert coordinator._remove_listener is None
 
 
 def test_schedule_next_update_cancels_existing_listener(coordinator, freezer):
@@ -209,17 +206,18 @@ def test_expected_timestamp_at_exact_5_minute_mark(coordinator, freezer):
 
 
 @pytest.mark.asyncio
-async def test_async_update_data_raises_when_radar_not_yet_available(coordinator):
+async def test_async_update_data_reports_missing_when_radar_not_yet_available(
+    coordinator,
+):
     coordinator.downloader.radar_exists.return_value = False
 
-    with (
-        patch.object(coordinator, "_schedule_next_update") as mock_schedule,
-        pytest.raises(UpdateFailed),
-    ):
-        await coordinator._async_update_data()
+    with patch.object(coordinator, "_schedule_next_update") as mock_schedule:
+        result = await coordinator._async_update_data()
 
-        mock_schedule.assert_called_once_with(retry=True)
-        coordinator.downloader.fetch_radar.assert_not_awaited()
+    assert result.health == "missing"
+    assert result.rain is None and result.distance_km is None
+    mock_schedule.assert_called_once_with()
+    coordinator.downloader.fetch_radar.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -236,6 +234,7 @@ async def test_async_update_data_success_uses_options_over_data(coordinator):
 
     with (
         patch.object(coordinator, "_schedule_next_update") as mock_schedule,
+        patch.object(coordinator, "_schedule_expiry"),
         patch(f"{MODULE}.RadarData") as mock_radar_data_cls,
     ):
         mock_radar_data_cls.from_bytes.return_value = fake_radar_data
@@ -254,6 +253,7 @@ async def test_async_update_data_success_uses_options_over_data(coordinator):
     assert result.radar is fake_radar_data
     assert result.rain is True
     assert result.distance_km == 3.5
+    assert result.health == "ok"
 
 
 @pytest.mark.asyncio
@@ -267,6 +267,7 @@ async def test_async_update_data_success_falls_back_to_entry_data(coordinator):
 
     with (
         patch.object(coordinator, "_schedule_next_update"),
+        patch.object(coordinator, "_schedule_expiry"),
         patch(f"{MODULE}.RadarData") as mock_radar_data_cls,
     ):
         mock_radar_data_cls.from_bytes.return_value = MagicMock()

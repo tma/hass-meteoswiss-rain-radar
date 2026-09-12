@@ -155,6 +155,32 @@ The package tests cover immediate qualifying alarms, restored active hold, start
 
 A separate documentation check resolved local Markdown links/anchors and compared option defaults, entity names/suffixes, health values and attributes with the implementation. Official source, standard, terms and license URLs returned HTTP 200. HACS version-selection instructions were checked against its public documentation; read-only GitHub API queries confirmed no fork releases/tags and upstream `v0.1.3` on 2026-09-09. These are documentation checks, not HACS or hassfest validation. The HA packages documentation URL couldn't be network-verified because its TLS certificate was reported as not yet valid; TLS verification was not bypassed. Package schemas and behavior were tested locally as described above.
 
+### Rain freshness and diagnostics follow-up
+
+Rain now reports age and health like hail, with its own `rain_max_age_minutes` and `rain_poll_seconds` settings. Rain geometry, threshold decoding and the coverage question stay out of scope; rain health deliberately makes no coverage claim and has no `coverage_complete` attribute. Two new diagnostic entities were added, `_rain_age` and `_rain_health`; the three existing rain unique IDs and custom IDs are untouched.
+
+Four source behaviors changed. Failed rain updates return an `error` result instead of raising, so the coordinator keeps publishing and polling and the age keeps advancing during an outage; Home Assistant otherwise suppresses listener updates on consecutive raised failures. `radar_exists` treats only 404 as absence, so 401/429/5xx and unfollowed redirects are `error` rather than a missing frame. Each poll checks the current five-minute frame and, if it isn't published yet, the one before it, which a 300-second poll needs because it can otherwise always land before publication. Decoding and the cell search moved into an executor.
+
+Two defects found in review are covered by regressions: a 404 poll after a failure restored the old reading without any download, and an unexpected exception wasn't latched either. A failure now stays `error` until a download succeeds, including a revalidating re-fetch of the cached frame, which keeps its original source timestamp.
+
+[`tests/test_rain_freshness.py`](../tests/test_rain_freshness.py) covers the fresh/cached/stale sequence including the expiry timer that publishes staleness without a request, the inclusive age limit, missing and future data, HTTP/transport/parse failures and recovery, the error latch through 404 and cache polls, retained observations with advancing age, bounded frame search, both timers being cancelled by `stop()`, and that neither a queued nor an in-flight update starts new work afterwards. Entity tests through a real entry check the eleven-entity set, units, the health enum, attributes without `coverage_complete`, unknown weather at expiry, readable diagnostics during a coordinator failure, and a startup outage that still loads the entry with working hail reporting.
+
+The original rain tests changed where the behavior changed: the five-minute schedule tests became poll-interval tests, and the "not yet available" test now expects a `missing` result rather than `UpdateFailed`. `test_radar_downloader.py` gained status/redirect/transport cases, and the shared-client test now expects an unfollowed redirect to raise instead of reporting absence. Configuration tests render both new rain fields through the real HTTP flows with their bounds, and check initial nondefault rain values reaching the real coordinator. The hail coordinator, downloader, reader and both examples are unchanged.
+
+```sh
+(
+  . /workspace/.venv/runtime-env.sh
+  .venv/bin/python -m pytest -q --capture=sys -p no:cacheprovider \
+    --basetemp=/workspace/.venv/pytest-parity-focused \
+    tests/test_rain_freshness.py tests/test_coordinator.py \
+    tests/test_radar_downloader.py tests/test_hail_setup.py
+  .venv/bin/python -m pytest -q --capture=sys -p no:cacheprovider \
+    --basetemp=/workspace/.venv/pytest-parity-full
+)
+```
+
+The full suite passed **466 tests**. Ruff lint passed for the repository; formatting passed for every touched file. `models.py` was rewritten and is now formatted, leaving `detector.py`, `geo.py` and `radar.py` as the untouched baseline exceptions. The mounted workspace's `.venv/bin/ruff` isn't executable, so the checks used a copy in a temporary directory. No live Home Assistant action, installation or storm validation was performed, and no broad type check was run.
+
 ## Fixture provenance
 
 **Source: MeteoSwiss.** The two bundled fixtures are unchanged official national grids, not clipped to a home location. The [provenance file](../tests/fixtures/hail/provenance.json) records exact URLs, retrieval/observation times, sizes, SHA256 values, STAC checksums, unit evidence, geometry, float encoding, attribution and [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) terms.
@@ -180,5 +206,6 @@ The tests read these local files and verify their bytes/checksums; they don't do
 - No tagged hail release. Development checks performed no live installation, restart, storm trial or device action. Later [HACS snapshot selection](hail.md#later-hacs-installation) and [shadow testing](hail.md#later-shadow-test) need approval.
 - No integration protection hold, physical release logic or MESHS entity. The [shadow package](hail.md#shadow-hold-package) implements a restored local request and the 30-minute evidence rule only; it never releases its hold. Operator settings must match the integration, and failed reloads/queue errors require stopping the trial for review.
 - No proof of compatibility with newer HA releases or of dependency wheel availability on the eventual host. Test there before an approved installation.
+- Rain health validates the update and the observation age only. The legacy rain detector skips cells outside the grid without reporting it, so no rain coverage state exists and `ok` is not a coverage claim. Giving rain truthful coverage semantics needs a rain-reader change, which was deliberately left out of this work.
 - Hassfest and HACS jobs in [the workflow](../.github/workflows/tests.yml) remain to be run for this work; the development runtime had no Docker. Upstream CI results don't validate this fork's hail change.
 - Existing packaging inconsistencies remain: `LICENSE` is MIT while `pyproject.toml` says Apache-2.0; `const.py` reports 0.1.0 while the manifest/project report 0.1.3; the project name contains spaces. The MIT notice and upstream attribution were preserved, not silently relicensed or changed as documentation cleanup. Resolve release metadata in a separately reviewed publication change.

@@ -14,6 +14,13 @@ DEFAULT_THRESHOLD = 0.2
 CONF_RADIUS = "radius"
 CONF_THRESHOLD = "threshold"
 
+# Freshness and polling settings, matching the hail ranges and defaults.
+CONF_RAIN_MAX_AGE = "rain_max_age_minutes"
+CONF_RAIN_POLL = "rain_poll_seconds"
+
+DEFAULT_RAIN_MAX_AGE = 10.0
+DEFAULT_RAIN_POLL = 60.0
+
 METEOSWISS_API_BASE_URL = "https://data.geo.admin.ch/ch.meteoschweiz.ogd-radar-precip/"
 # Provisional reporting settings, independent of the legacy rain options.
 CONF_HAIL_RADIUS = "hail_radius_km"

@@ -159,7 +159,7 @@ A separate documentation check resolved local Markdown links/anchors and compare
 
 Rain now reports age and health like hail, with its own `rain_max_age_minutes` and `rain_poll_seconds` settings. Rain geometry, threshold decoding and the coverage question stay out of scope; rain health deliberately makes no coverage claim and has no `coverage_complete` attribute. Two new diagnostic entities were added, `_rain_age` and `_rain_health`; the three existing rain unique IDs and custom IDs are untouched.
 
-Four source behaviors changed. Failed rain updates return an `error` result instead of raising, so the coordinator keeps publishing and polling and the age keeps advancing during an outage; Home Assistant otherwise suppresses listener updates on consecutive raised failures. `radar_exists` treats only 404 as absence, so 401/429/5xx and unfollowed redirects are `error` rather than a missing frame. Each poll checks the current five-minute frame and, if it isn't published yet, the one before it, which a 300-second poll needs because it can otherwise always land before publication. Decoding and the cell search moved into an executor.
+Four source behaviors changed. Failed rain updates return an `error` result instead of raising, so the coordinator keeps publishing and polling and the age keeps advancing during an outage; Home Assistant otherwise suppresses listener updates on consecutive raised failures. `radar_exists` treats only 404 as absence, so 401/429/5xx and unfollowed redirects are `error` rather than a missing frame. Each poll checks the current five-minute frame and, if it isn't published yet, the one before it, which a 300-second poll needs because it can otherwise always land before publication. Decoding and the cell search moved into an executor. **Superseded:** the guessed filename, the HEAD probe and `radar_exists` were replaced by catalogue discovery; see [rain catalogue discovery](#rain-catalogue-discovery) below.
 
 Two defects found in review are covered by regressions: a 404 poll after a failure restored the old reading without any download, and an unexpected exception wasn't latched either. A failure now stays `error` until a download succeeds, including a revalidating re-fetch of the cached frame, which keeps its original source timestamp.
 
@@ -180,6 +180,45 @@ The original rain tests changed where the behavior changed: the five-minute sche
 ```
 
 The full suite passed **466 tests**. Ruff lint passed for the repository; formatting passed for every touched file. `models.py` was rewritten and is now formatted, leaving `detector.py`, `geo.py` and `radar.py` as the untouched baseline exceptions. The mounted workspace's `.venv/bin/ruff` isn't executable, so the checks used a copy in a temporary directory. No live Home Assistant action, installation or storm validation was performed, and no broad type check was run.
+
+### Rain catalogue discovery
+
+Rain built its download URL from the timestamp with a hardcoded `vl` site suffix. On 2026-09-15 every user slot (08:50, 08:55, 09:00, 09:05, 09:10 UTC) returned 403 for `rzc26258HHMMvl.001.h5`, while the daily STAC item listed `…ul.001.h5` and served it with 200. The same suffix had already moved once: commit `54f6a85` changed the built name from `nl` back to `vl` in August 2026. A 403 is also returned for names that don't exist, so no built name can tell absence from a renamed frame.
+
+Rain now reads the published href from the official daily item, like hail. The shared machinery moved into [`stac_downloader.py`](../custom_components/meteoswiss_rain_radar/stac_downloader.py): daily-item conditional GETs with ETag or `Last-Modified`, 304 reuse of immutable parsed metadata, executor JSON parsing and selection, URL plus SHA256 identity, mandatory checksum verification, bounded response bytes, per-request and overall deadlines, bounded retries for 404/408/429/5xx only, no redirects, and borrowed-client ownership. [`hail_downloader.py`](../custom_components/meteoswiss_rain_radar/hail_downloader.py) and [`radar_downloader.py`](../custom_components/meteoswiss_rain_radar/radar_downloader.py) are product policies plus a factory, not subclasses.
+
+The two policies stay different where the products differ. Hail keeps 15 daily items, the inclusive 14-day cutoff and the single cold archive listing. Rain reads today and, if needed, the previous UTC day, has no archive listing, and caches at most those two items. Rain accepts `rzc…KK.x01.h5` only, so CPC files, other grids and the `2400`/`3000` daily aggregates are skipped. Same-time duplicates are ordered by href, which is deterministic and claims nothing about one site suffix being better than another. Hail production code is unchanged apart from the import and factory call.
+
+The rain coordinator now discovers once per poll instead of probing two timestamps, downloads only when the URL or checksum changes, and keeps the rest: poll timer, expiry timer, source timestamps, the `_failed` latch that only a successful download clears, and the stop guard. A file 403, a malformed item, a checksum mismatch or any unexpected status is `error`; only an empty daily item or an exhausted daily-item 404 is absence. A published frame older than `rain_max_age_minutes` is reported `stale` and never downloaded.
+
+`RadarDownloader.build_filename`, `build_url`, `radar_exists`, `fetch_radar`, `_expected_timestamp` and `METEOSWISS_API_BASE_URL` are gone, with their tests, rather than kept as dead code.
+
+```sh
+(
+  . /workspace/.venv/runtime-env.sh  # This development workspace only.
+  .venv/bin/python -m pytest -q --capture=sys -p no:cacheprovider \
+    --basetemp=/workspace/.venv/pytest-discovery-focused \
+    tests/test_radar_downloader.py tests/test_rain_discovery.py \
+    tests/test_rain_freshness.py tests/test_coordinator.py \
+    tests/test_hail_downloader.py tests/test_hail_coordinator.py \
+    tests/test_http_client.py tests/test_hail_setup.py
+  .venv/bin/python -m pytest -q --capture=sys -p no:cacheprovider \
+    --basetemp=/workspace/.venv/pytest-discovery-full
+  .venv/bin/python -m mypy --check-untyped-defs --follow-imports=skip \
+    --ignore-missing-imports \
+    custom_components/meteoswiss_rain_radar/{stac_downloader,radar_downloader,hail_downloader}.py
+)
+```
+
+The focused run had 233 passes and the full suite **515 passed**. Repository Ruff lint passed; formatting passed for every touched file, leaving `detector.py`, `geo.py` and `radar.py` as the untouched baseline exceptions. Reduced mypy passes for the three downloader modules; `coordinator.py` still reports the same five HA `data` attribute errors it reports on unchanged HEAD.
+
+The fail-before check ran a temporary coordinator test against the unmodified source with the daily item listing the `ul` frame and every other rain URL returning 403. It reported `error` before the change and `ok` after, then was deleted in favor of the retained tests.
+
+[`tests/test_radar_downloader.py`](../tests/test_radar_downloader.py) covers five site suffixes, the latest-frame and future rules, ignored products, grids, aggregates and foreign or mismatched hrefs, the previous-day item around midnight, the two-day bound without pagination, daily 404 absence against 403 and other statuses, malformed items, ETag revalidation with a same-time correction, two-entry cache eviction, missing and mismatched checksums, byte limits and both client ownership modes. [`tests/test_rain_discovery.py`](../tests/test_rain_discovery.py) drives the real coordinator and downloader over mocked HTTP: fifteen 60-second polls across three frames whose suffixes change `nl` to `vl` to `ul` without an unknown value at default settings, an unchanged timestamp when nothing new is published, a re-decoded same-time correction, file and catalogue 403 staying `error`, the previous frame including just after midnight, a stale published frame that is never downloaded, and a stop that leaves Home Assistant's shared client open.
+
+Existing rain tests were updated where the API changed: `test_coordinator.py` lost the filename and expected-timestamp cases, and `test_rain_freshness.py` now mocks `discover`/`fetch`. Hail tests keep their assertions; their imports and patch targets moved to the shared module, and one case checks `nl`, `vl` and `ul` hrefs through a real mocked fetch. `test_hail_setup.py` and `test_http_client.py` use the rain daily item instead of the HEAD probe. Review follow-ups also cover catalogue rollback without replacing a newer observation, forced file verification after an error, rejection of normalized path escapes, and stopping retries and cache writes after unload.
+
+Limits: this fixes discovery only. Rain decoding, geometry, thresholds and the missing rain coverage state are unchanged, and `ok` is still not a coverage claim. There is no live Home Assistant run, no live source request from these checks, and no proof that the catalogue lists every frame the radar produced. Selection among same-time duplicates is deterministic, not a quality judgement. Hassfest and HACS jobs still haven't run.
 
 ## Fixture provenance
 

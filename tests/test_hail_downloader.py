@@ -13,15 +13,17 @@ from custom_components.meteoswiss_rain_radar.hail_downloader import (
     ASSET_PATH,
     COLLECTION_URL,
     ITEMS_URL,
-    HailAsset,
-    HailDownloader,
+    create_hail_downloader,
+)
+from custom_components.meteoswiss_rain_radar.stac_downloader import (
+    StacAsset,
     _parse_metadata,
     _select_candidates,
 )
 
 from .hail_helpers import OBSERVATION
 
-MODULE = "custom_components.meteoswiss_rain_radar.hail_downloader"
+MODULE = "custom_components.meteoswiss_rain_radar.stac_downloader"
 
 
 def daily_url(day=OBSERVATION):
@@ -76,7 +78,7 @@ def page(*assets, next_url=None):
 
 @pytest.fixture
 async def downloader():
-    downloader = HailDownloader()
+    downloader = create_hail_downloader()
     yield downloader
     await downloader.close()
 
@@ -174,6 +176,21 @@ async def test_conditional_daily_items_and_url_checksum_file_cache(
     assert selected.observation == OBSERVATION
 
 
+@pytest.mark.parametrize("suffix", ["nl", "vl", "ul"])
+async def test_any_published_site_suffix_is_downloaded(downloader, httpx_mock, suffix):
+    """The suffix follows radar-site availability and is never built locally."""
+    asset = stac_asset(filename=OBSERVATION.strftime(f"bzc%y%j%H%M{suffix}.845.h5"))
+    httpx_mock.add_response(url=TODAY_URL, json=item(asset))
+    httpx_mock.add_response(url=asset["href"], content=b"hail")
+
+    discovery = await downloader.discover(OBSERVATION)
+
+    assert discovery.observation == OBSERVATION
+    assert discovery.asset.url == asset["href"]
+    assert await downloader.fetch(discovery.asset) == b"hail"
+    assert str(httpx_mock.get_requests()[-1].url) == asset["href"]
+
+
 async def test_new_url_with_same_checksum_is_a_new_identity(downloader, httpx_mock):
     for time in (OBSERVATION, OBSERVATION + timedelta(minutes=5)):
         asset = stac_asset(time)
@@ -187,7 +204,7 @@ async def test_new_url_with_same_checksum_is_a_new_identity(downloader, httpx_mo
 
 async def test_failed_checksum_not_cached(downloader, httpx_mock):
     asset = stac_asset()
-    selected = HailAsset(asset["href"], asset["file:checksum"][4:], OBSERVATION)
+    selected = StacAsset(asset["href"], asset["file:checksum"][4:], OBSERVATION)
     httpx_mock.add_response(url=asset["href"], content=b"wrong")
     with pytest.raises(ValueError, match="SHA256"):
         await downloader.fetch(selected)
@@ -234,7 +251,14 @@ async def test_permanent_error_not_retried(downloader, httpx_mock):
 
 @pytest.mark.parametrize(
     "next_url",
-    [ITEMS_URL, "https://example.com/items", "http://data.geo.admin.ch/items"],
+    [
+        ITEMS_URL,
+        "https://example.com/items",
+        "http://data.geo.admin.ch/items",
+        f"{COLLECTION_URL}/items-evil?cursor=next",
+        f"{COLLECTION_URL}/items/../../other/items?cursor=next",
+        f"{COLLECTION_URL}/items/%2e%2e/%2e%2e/other/items?cursor=next",
+    ],
 )
 async def test_pagination_loop_and_untrusted_links_rejected(
     downloader, httpx_mock, next_url
@@ -325,7 +349,7 @@ async def test_malformed_stac_schema(downloader, httpx_mock, payload):
 
 async def test_file_byte_bound_and_unexpected_asset_304(downloader, httpx_mock):
     asset = stac_asset()
-    selected = HailAsset(asset["href"], asset["file:checksum"][4:], OBSERVATION)
+    selected = StacAsset(asset["href"], asset["file:checksum"][4:], OBSERVATION)
     httpx_mock.add_response(url=selected.url, content=b"hail")
     with (
         patch(f"{MODULE}.MAX_FILE_BYTES", 3),
@@ -356,7 +380,7 @@ async def test_daily_304_reuses_immutable_metadata_and_rechecks_future_in_execut
 
     def parse(*args):
         assert threading.get_ident() != loop_thread
-        parses.append(args[1])
+        parses.append(args[2])
         return _parse_metadata(*args)
 
     def select(*args):
@@ -364,7 +388,9 @@ async def test_daily_304_reuses_immutable_metadata_and_rechecks_future_in_execut
         selections.append(args[0])
         return _select_candidates(*args)
 
-    downloader = HailDownloader(async_add_executor_job=hass.async_add_executor_job)
+    downloader = create_hail_downloader(
+        async_add_executor_job=hass.async_add_executor_job
+    )
     future = OBSERVATION + timedelta(minutes=5)
     httpx_mock.add_response(
         url=TODAY_URL,
@@ -468,7 +494,7 @@ async def test_daily_404_exhaustion_means_absence_not_cached_weather(
 
 async def test_asset_404_remains_retriable_not_absence(downloader, httpx_mock):
     metadata = stac_asset()
-    asset = HailAsset(metadata["href"], metadata["file:checksum"][4:], OBSERVATION)
+    asset = StacAsset(metadata["href"], metadata["file:checksum"][4:], OBSERVATION)
     for _ in range(3):
         httpx_mock.add_response(url=asset.url, status_code=404)
     with patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock) as sleep:

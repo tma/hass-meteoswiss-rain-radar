@@ -12,7 +12,6 @@ Adjust the import below to match your actual module path, e.g.:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,8 +25,25 @@ from custom_components.meteoswiss_rain_radar.const import (
 from custom_components.meteoswiss_rain_radar.coordinator import (
     MeteoSwissRainRadarCoordinator,
 )
+from custom_components.meteoswiss_rain_radar.stac_downloader import (
+    Discovery,
+    StacAsset,
+)
 
 MODULE = "custom_components.meteoswiss_rain_radar.coordinator"
+
+
+def published_now() -> Discovery:
+    """A listed asset for the current five-minute slot, as the catalogue gives it."""
+    now = datetime.now(UTC)
+    observation = now.replace(minute=now.minute // 5 * 5, second=0, microsecond=0)
+    asset = StacAsset(
+        "https://data.geo.admin.ch/ch.meteoschweiz.ogd-radar-precip/"
+        f"{observation:%Y%m%d}-ch/{observation:rzc%y%j%H%M}ul.001.h5",
+        "b" * 64,
+        observation,
+    )
+    return Discovery(asset, "ok", observation)
 
 
 def make_entry(**data_overrides) -> MockConfigEntry:
@@ -45,16 +61,16 @@ def make_entry(**data_overrides) -> MockConfigEntry:
 async def coordinator(hass):
     entry = make_entry()
     entry.add_to_hass(hass)
-    with patch(f"{MODULE}.RadarDownloader"), patch(f"{MODULE}.RainDetector"):
+    with (
+        patch(f"{MODULE}.create_radar_downloader"),
+        patch(f"{MODULE}.RainDetector"),
+    ):
         coord = MeteoSwissRainRadarCoordinator(hass, entry)
     # Replace with fresh AsyncMocks so we can assert on individual tests.
     coord.downloader = MagicMock()
     coord.downloader.close = AsyncMock()
-    coord.downloader.radar_exists = AsyncMock()
-    coord.downloader.fetch_radar = AsyncMock()
-    coord.downloader.build_url = MagicMock(
-        return_value=("some.h5", "https://example.com/some.h5")
-    )
+    coord.downloader.discover = AsyncMock(return_value=Discovery(None))
+    coord.downloader.fetch = AsyncMock(return_value=b"raw-bytes")
     coord.detector = MagicMock()
     yield coord
     await coord.stop()
@@ -69,7 +85,10 @@ def test_init_sets_up_attributes(hass):
     entry = make_entry()
     entry.add_to_hass(hass)
 
-    with patch(f"{MODULE}.RadarDownloader"), patch(f"{MODULE}.RainDetector"):
+    with (
+        patch(f"{MODULE}.create_radar_downloader"),
+        patch(f"{MODULE}.RainDetector"),
+    ):
         coord = MeteoSwissRainRadarCoordinator(hass, entry)
 
     assert coord.entry is entry
@@ -180,27 +199,6 @@ async def test_scheduled_refresh_calls_async_refresh(coordinator):
 
 
 # ---------------------------------------------------------------------------
-# _expected_timestamp
-# ---------------------------------------------------------------------------
-
-
-def test_expected_timestamp_floors_to_5_minutes(coordinator, freezer):
-    freezer.move_to(datetime(2024, 1, 1, 10, 7, 42, 123456, tzinfo=UTC))
-
-    result = coordinator._expected_timestamp()
-
-    assert result == datetime(2024, 1, 1, 10, 5, 0, 0, tzinfo=UTC)
-
-
-def test_expected_timestamp_at_exact_5_minute_mark(coordinator, freezer):
-    freezer.move_to(datetime(2024, 1, 1, 10, 10, 0, tzinfo=UTC))
-
-    result = coordinator._expected_timestamp()
-
-    assert result == datetime(2024, 1, 1, 10, 10, 0, 0, tzinfo=UTC)
-
-
-# ---------------------------------------------------------------------------
 # _async_update_data
 # ---------------------------------------------------------------------------
 
@@ -209,7 +207,7 @@ def test_expected_timestamp_at_exact_5_minute_mark(coordinator, freezer):
 async def test_async_update_data_reports_missing_when_radar_not_yet_available(
     coordinator,
 ):
-    coordinator.downloader.radar_exists.return_value = False
+    coordinator.downloader.discover.return_value = Discovery(None)
 
     with patch.object(coordinator, "_schedule_next_update") as mock_schedule:
         result = await coordinator._async_update_data()
@@ -217,7 +215,7 @@ async def test_async_update_data_reports_missing_when_radar_not_yet_available(
     assert result.health == "missing"
     assert result.rain is None and result.distance_km is None
     mock_schedule.assert_called_once_with()
-    coordinator.downloader.fetch_radar.assert_not_awaited()
+    coordinator.downloader.fetch.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -225,9 +223,7 @@ async def test_async_update_data_success_uses_options_over_data(coordinator):
     coordinator.hass.config_entries.async_update_entry(
         coordinator.entry, options={CONF_THRESHOLD: 0.5, CONF_RADIUS: 20}
     )
-    coordinator.downloader.radar_exists.return_value = True
-    radar_bytesio = BytesIO(b"raw-bytes")
-    coordinator.downloader.fetch_radar.return_value = radar_bytesio
+    coordinator.downloader.discover.return_value = published_now()
 
     fake_radar_data = MagicMock(name="RadarData")
     coordinator.detector.detect.return_value = (True, 3.5)
@@ -241,7 +237,7 @@ async def test_async_update_data_success_uses_options_over_data(coordinator):
 
         result = await coordinator._async_update_data()
 
-    mock_radar_data_cls.from_bytes.assert_called_once_with(radar_bytesio, threshold=0.5)
+    mock_radar_data_cls.from_bytes.assert_called_once_with(b"raw-bytes", threshold=0.5)
     coordinator.detector.detect.assert_called_once_with(
         fake_radar_data,
         latitude=47.0,
@@ -260,9 +256,7 @@ async def test_async_update_data_success_uses_options_over_data(coordinator):
 async def test_async_update_data_success_falls_back_to_entry_data(coordinator):
     # options empty -> should fall back to entry.data values
     coordinator.hass.config_entries.async_update_entry(coordinator.entry, options={})
-    coordinator.downloader.radar_exists.return_value = True
-    radar_bytesio = BytesIO(b"raw-bytes")
-    coordinator.downloader.fetch_radar.return_value = radar_bytesio
+    coordinator.downloader.discover.return_value = published_now()
     coordinator.detector.detect.return_value = (False, None)
 
     with (
@@ -274,7 +268,7 @@ async def test_async_update_data_success_falls_back_to_entry_data(coordinator):
 
         await coordinator._async_update_data()
 
-    mock_radar_data_cls.from_bytes.assert_called_once_with(radar_bytesio, threshold=0.2)
+    mock_radar_data_cls.from_bytes.assert_called_once_with(b"raw-bytes", threshold=0.2)
     coordinator.detector.detect.assert_called_once_with(
         mock_radar_data_cls.from_bytes.return_value,
         latitude=47.0,

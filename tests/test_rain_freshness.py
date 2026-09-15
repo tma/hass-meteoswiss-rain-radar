@@ -2,7 +2,6 @@
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -28,7 +27,11 @@ from custom_components.meteoswiss_rain_radar.coordinator import (
 from custom_components.meteoswiss_rain_radar.hail_coordinator import HailResult
 from custom_components.meteoswiss_rain_radar.hail_reader import HailAnalysis
 from custom_components.meteoswiss_rain_radar.models import RadarResult
-from custom_components.meteoswiss_rain_radar.radar_downloader import RadarDownloader
+from custom_components.meteoswiss_rain_radar.stac_downloader import (
+    Discovery,
+    StacAsset,
+    StacDownloader,
+)
 
 from .hail_helpers import OBSERVATION
 from .test_hail_setup import make_entry
@@ -37,6 +40,18 @@ MODULE = "custom_components.meteoswiss_rain_radar.coordinator"
 SETUP_MODULE = "custom_components.meteoswiss_rain_radar"
 # The published five-minute frame is normally readable just after its slot.
 PUBLISHED = OBSERVATION + timedelta(seconds=50)
+NOTHING = Discovery(None)
+
+
+def frame(observation, *, checksum="a" * 64) -> Discovery:
+    """What the daily catalogue item publishes for one five-minute slot."""
+    asset = StacAsset(
+        "https://data.geo.admin.ch/ch.meteoschweiz.ogd-radar-precip/"
+        f"{observation:%Y%m%d}-ch/{observation:rzc%y%j%H%M}ul.001.h5",
+        checksum,
+        observation,
+    )
+    return Discovery(asset, "ok", observation)
 
 
 def make_coordinator(hass, *, options=None):
@@ -50,11 +65,8 @@ def make_coordinator(hass, *, options=None):
     coordinator = MeteoSwissRainRadarCoordinator(hass, entry)
     coordinator.downloader = MagicMock()
     coordinator.downloader.close = AsyncMock()
-    coordinator.downloader.radar_exists = AsyncMock(return_value=True)
-    coordinator.downloader.fetch_radar = AsyncMock(return_value=BytesIO(b"radar"))
-    coordinator.downloader.build_url = MagicMock(
-        return_value=("rzc.h5", "https://example.invalid/rzc.h5")
-    )
+    coordinator.downloader.discover = AsyncMock(return_value=frame(OBSERVATION))
+    coordinator.downloader.fetch = AsyncMock(return_value=b"radar")
     coordinator.detector = MagicMock()
     coordinator.detector.detect.return_value = (True, 2.5)
     return coordinator
@@ -88,8 +100,8 @@ async def test_cached_frame_is_not_redownloaded_and_keeps_its_timestamp(
     freezer.move_to(OBSERVATION + timedelta(minutes=3))
     await coordinator.async_refresh()
 
-    assert coordinator.downloader.radar_exists.await_count == 1
-    assert coordinator.downloader.fetch_radar.await_count == 1
+    assert coordinator.downloader.discover.await_count == 2
+    assert coordinator.downloader.fetch.await_count == 1
     assert coordinator.data.last_update == OBSERVATION
     assert coordinator.data.health == "ok"
     assert coordinator.current_result.age_minutes(datetime.now(UTC)) == 3
@@ -99,7 +111,7 @@ async def test_unpublished_next_frame_keeps_the_fresh_cache_then_expires(
     coordinator, freezer
 ):
     await coordinator.async_refresh()
-    coordinator.downloader.radar_exists.return_value = False
+    coordinator.downloader.discover.return_value = NOTHING
 
     freezer.move_to(OBSERVATION + timedelta(minutes=5, seconds=50))
     await coordinator.async_refresh()
@@ -112,7 +124,7 @@ async def test_unpublished_next_frame_keeps_the_fresh_cache_then_expires(
     assert coordinator.data.health == "stale"
     assert coordinator.data.rain is None and coordinator.data.distance_km is None
     assert coordinator.data.last_update == OBSERVATION
-    assert coordinator.downloader.fetch_radar.await_count == 1
+    assert coordinator.downloader.fetch.await_count == 1
 
 
 async def test_freshness_cutoff_is_inclusive_at_the_limit(coordinator, freezer):
@@ -138,7 +150,7 @@ async def test_expiry_timer_publishes_stale_without_any_request(
         await coordinator.async_refresh()
         assert coordinator._cancel_expiry is not None
         poll_timer = coordinator._remove_listener
-        requests = coordinator.downloader.radar_exists.await_count
+        requests = coordinator.downloader.discover.await_count
 
         freezer.move_to(OBSERVATION + timedelta(minutes=1, microseconds=1))
         async_fire_time_changed_exact(hass, datetime.now(UTC))
@@ -147,7 +159,7 @@ async def test_expiry_timer_publishes_stale_without_any_request(
         assert coordinator.data.health == "stale"
         assert coordinator.data.rain is None
         assert notifications[-1].health == "stale"
-        assert coordinator.downloader.radar_exists.await_count == requests
+        assert coordinator.downloader.discover.await_count == requests
         assert coordinator._remove_listener is poll_timer  # Poll deadline unchanged.
         assert coordinator._cancel_expiry is None
     finally:
@@ -161,35 +173,31 @@ async def test_error_is_not_cleared_by_an_unpublished_frame(coordinator, freezer
     assert coordinator.data.health == "ok" and coordinator.data.rain is False
 
     freezer.move_to(OBSERVATION + timedelta(minutes=5, seconds=10))
-    coordinator.downloader.radar_exists.side_effect = httpx.ReadTimeout("timeout")
+    coordinator.downloader.discover.side_effect = httpx.ReadTimeout("timeout")
     await coordinator.async_refresh()
     assert coordinator.data.health == "error"
 
     freezer.move_to(OBSERVATION + timedelta(minutes=6))
-    coordinator.downloader.radar_exists.side_effect = None
-    coordinator.downloader.radar_exists.return_value = False
+    coordinator.downloader.discover.side_effect = None
+    coordinator.downloader.discover.return_value = NOTHING
     await coordinator.async_refresh()
     assert coordinator.data.health == "error"  # Not a restored dry reading.
     assert coordinator.data.rain is None
     assert coordinator.data.last_update == OBSERVATION
     assert coordinator.data.age_minutes(datetime.now(UTC)) == 6
-    assert coordinator.downloader.fetch_radar.await_count == 1
+    assert coordinator.downloader.fetch.await_count == 1
 
 
 async def test_previous_frame_download_clears_the_error_latch(coordinator, freezer):
     """Revalidating the cached frame recovers, with its source time unchanged."""
     await coordinator.async_refresh()
-    coordinator.downloader.radar_exists.side_effect = httpx.ConnectError("down")
+    coordinator.downloader.discover.side_effect = httpx.ConnectError("down")
     freezer.move_to(OBSERVATION + timedelta(minutes=5, seconds=10))
     await coordinator.async_refresh()
     assert coordinator.data.health == "error"
 
-    published = {OBSERVATION}
-
-    async def exists(timestamp):
-        return timestamp in published
-
-    coordinator.downloader.radar_exists.side_effect = exists
+    coordinator.downloader.discover.side_effect = None
+    coordinator.downloader.discover.return_value = frame(OBSERVATION)
     freezer.move_to(OBSERVATION + timedelta(minutes=6))
     await coordinator.async_refresh()
 
@@ -197,7 +205,8 @@ async def test_previous_frame_download_clears_the_error_latch(coordinator, freez
     assert coordinator.data.last_update == OBSERVATION  # Unchanged source time.
     assert coordinator.data.rain is True
     assert coordinator._failed is False
-    assert coordinator.downloader.fetch_radar.await_count == 2
+    # The cached frame is re-fetched; a failure is only cleared by a download.
+    assert coordinator.downloader.fetch.await_count == 2
 
 
 async def test_poll_before_publication_uses_the_previous_frame(hass, freezer):
@@ -206,48 +215,47 @@ async def test_poll_before_publication_uses_the_previous_frame(hass, freezer):
     with patch(f"{MODULE}.RadarData") as radar_data:
         radar_data.from_bytes.return_value = MagicMock(name="RadarData")
         coordinator = make_coordinator(hass, options={CONF_RAIN_POLL: 300})
-        published = {OBSERVATION}
-
-        async def exists(timestamp):
-            return timestamp in published
-
-        coordinator.downloader.radar_exists.side_effect = exists
+        # The catalogue still lists the previous slot as its newest frame.
+        coordinator.downloader.discover.return_value = frame(OBSERVATION)
         try:
             await coordinator.async_refresh()
             assert coordinator.data.health == "ok"
             assert coordinator.data.last_update == OBSERVATION
-            assert coordinator.downloader.radar_exists.await_count == 2
-            assert coordinator.downloader.fetch_radar.await_count == 1
+            # One catalogue lookup covers every slot, published or not.
+            assert coordinator.downloader.discover.await_count == 1
+            assert coordinator.downloader.fetch.await_count == 1
 
             # The next poll is again ahead of publication; take the next frame.
-            published.add(OBSERVATION + timedelta(minutes=5))
+            coordinator.downloader.discover.return_value = frame(
+                OBSERVATION + timedelta(minutes=5)
+            )
             freezer.move_to(OBSERVATION + timedelta(minutes=10, seconds=10))
             await coordinator.async_refresh()
             assert coordinator.data.last_update == OBSERVATION + timedelta(minutes=5)
             assert coordinator.data.health == "ok"
-            assert coordinator.downloader.fetch_radar.await_count == 2
+            assert coordinator.downloader.fetch.await_count == 2
         finally:
             await coordinator.stop()
 
 
-async def test_frame_search_is_bounded_to_one_step_and_the_age_limit(hass, freezer):
+async def test_one_lookup_per_poll_and_no_download_beyond_the_age_limit(hass, freezer):
     freezer.move_to(OBSERVATION + timedelta(minutes=5, seconds=10))
     with patch(f"{MODULE}.RadarData"):
         coordinator = make_coordinator(hass)
-        coordinator.downloader.radar_exists.return_value = False
+        coordinator.downloader.discover.return_value = NOTHING
         try:
             await coordinator.async_refresh()
             assert coordinator.data.health == "missing"
-            # Current and one previous frame only; no unbounded history walk.
-            assert coordinator.downloader.radar_exists.await_args_list == [
-                ((OBSERVATION + timedelta(minutes=5),), {}),
-                ((OBSERVATION,), {}),
-            ]
+            assert coordinator.downloader.discover.await_count == 1
 
-            coordinator.max_age_minutes = 1
-            coordinator.downloader.radar_exists.reset_mock()
+            # A published frame older than the age limit is reported, not read.
+            coordinator.downloader.discover.return_value = frame(
+                OBSERVATION - timedelta(hours=1)
+            )
             await coordinator.async_refresh()
-            assert coordinator.downloader.radar_exists.await_count == 1
+            assert coordinator.data.health == "stale"
+            assert coordinator.data.last_update == OBSERVATION - timedelta(hours=1)
+            coordinator.downloader.fetch.assert_not_awaited()
         finally:
             await coordinator.stop()
 
@@ -255,7 +263,7 @@ async def test_frame_search_is_bounded_to_one_step_and_the_age_limit(hass, freez
 async def test_missing_first_update_has_no_values_and_keeps_polling(
     hass, coordinator, freezer
 ):
-    coordinator.downloader.radar_exists.return_value = False
+    coordinator.downloader.discover.return_value = NOTHING
     await coordinator.async_refresh()
 
     assert coordinator.data.health == "missing"
@@ -268,7 +276,7 @@ async def test_missing_first_update_has_no_values_and_keeps_polling(
     freezer.move_to(PUBLISHED + timedelta(seconds=61))
     async_fire_time_changed_exact(hass, datetime.now(UTC))
     await hass.async_block_till_done()
-    assert coordinator.downloader.radar_exists.await_count == 4  # Two frames a poll.
+    assert coordinator.downloader.discover.await_count == 2  # One lookup a poll.
 
 
 async def test_future_observation_is_unknown_not_rain(coordinator, freezer):
@@ -296,13 +304,13 @@ async def test_future_observation_is_unknown_not_rain(coordinator, freezer):
     ],
 )
 async def test_request_failures_are_error_health_not_missing(coordinator, failure):
-    coordinator.downloader.radar_exists.side_effect = failure
+    coordinator.downloader.discover.side_effect = failure
     await coordinator.async_refresh()
 
     assert coordinator.data.health == "error"
     assert coordinator.data.rain is None
     assert coordinator.last_update_success  # Health stays readable.
-    coordinator.downloader.fetch_radar.assert_not_awaited()
+    coordinator.downloader.fetch.assert_not_awaited()
 
 
 @pytest.mark.parametrize("failure", [OSError("truncated file"), ValueError("bad grid")])
@@ -324,7 +332,7 @@ async def test_error_retains_observation_advances_age_and_notifies_each_poll(
         lambda: notifications.append(coordinator.current_result)
     )
     try:
-        coordinator.downloader.radar_exists.side_effect = httpx.ReadTimeout("timeout")
+        coordinator.downloader.discover.side_effect = httpx.ReadTimeout("timeout")
         for minutes in (6, 7):
             freezer.move_to(OBSERVATION + timedelta(minutes=minutes))
             await coordinator.async_refresh()
@@ -343,12 +351,12 @@ async def test_error_retains_observation_advances_age_and_notifies_each_poll(
 
 
 async def test_error_recovers_on_a_later_poll(hass, coordinator, freezer):
-    coordinator.downloader.radar_exists.side_effect = httpx.ConnectError("down")
+    coordinator.downloader.discover.side_effect = httpx.ConnectError("down")
     await coordinator.async_refresh()
     assert coordinator.data.health == "error"
 
-    coordinator.downloader.radar_exists.side_effect = None
-    coordinator.downloader.radar_exists.return_value = True
+    coordinator.downloader.discover.side_effect = None
+    coordinator.downloader.discover.return_value = frame(OBSERVATION)
     freezer.move_to(PUBLISHED + timedelta(seconds=61))
     async_fire_time_changed_exact(hass, datetime.now(UTC))
     await hass.async_block_till_done()
@@ -362,7 +370,7 @@ async def test_unexpected_failure_latches_and_still_schedules_the_next_poll(
     coordinator, freezer
 ):
     await coordinator.async_refresh()
-    coordinator.downloader.radar_exists.side_effect = RuntimeError("unexpected")
+    coordinator.downloader.discover.side_effect = RuntimeError("unexpected")
     freezer.move_to(OBSERVATION + timedelta(minutes=5, seconds=10))
     await coordinator.async_refresh()
 
@@ -372,8 +380,8 @@ async def test_unexpected_failure_latches_and_still_schedules_the_next_poll(
     assert coordinator._remove_listener is not None
 
     # The next poll finds nothing published; that is no evidence of recovery.
-    coordinator.downloader.radar_exists.side_effect = None
-    coordinator.downloader.radar_exists.return_value = False
+    coordinator.downloader.discover.side_effect = None
+    coordinator.downloader.discover.return_value = NOTHING
     freezer.move_to(OBSERVATION + timedelta(minutes=6))
     await coordinator.async_refresh()
     assert coordinator.last_update_success
@@ -395,12 +403,12 @@ async def test_stop_cancels_both_timers_and_no_later_work_rearms(
     assert coordinator._cancel_expiry is None
     coordinator.downloader.close.assert_awaited_once()
 
-    requests = coordinator.downloader.radar_exists.await_count
+    requests = coordinator.downloader.discover.await_count
     for minutes in (2, 11):
         freezer.move_to(OBSERVATION + timedelta(minutes=minutes))
         async_fire_time_changed_exact(hass, datetime.now(UTC))
         await hass.async_block_till_done()
-    assert coordinator.downloader.radar_exists.await_count == requests
+    assert coordinator.downloader.discover.await_count == requests
     assert coordinator._remove_listener is None
     assert coordinator._cancel_expiry is None
 
@@ -410,7 +418,7 @@ async def test_queued_refresh_after_stop_leaves_no_timer(coordinator):
     await coordinator.stop()
     await queued
 
-    assert coordinator.downloader.radar_exists.await_count == 0
+    assert coordinator.downloader.discover.await_count == 0
     assert coordinator._remove_listener is None
     assert coordinator._cancel_expiry is None
 
@@ -418,12 +426,12 @@ async def test_queued_refresh_after_stop_leaves_no_timer(coordinator):
 async def test_inflight_update_finishing_after_stop_cannot_rearm(hass, coordinator):
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def blocked(_timestamp):
+    async def blocked(_now):
         entered.set()
         await release.wait()
-        return False
+        return NOTHING
 
-    coordinator.downloader.radar_exists.side_effect = blocked
+    coordinator.downloader.discover.side_effect = blocked
     task = hass.async_create_task(coordinator.async_refresh())
     await entered.wait()
     await coordinator.stop()
@@ -589,12 +597,12 @@ async def test_first_update_outage_still_loads_entry_and_hail(
 ):
     """A rain outage at startup registers diagnostics instead of failing setup."""
     freezer.move_to(PUBLISHED)
-    exists = (
-        AsyncMock(side_effect=failure) if failure else AsyncMock(return_value=False)
+    discover = (
+        AsyncMock(side_effect=failure) if failure else AsyncMock(return_value=NOTHING)
     )
     with (
-        patch.object(RadarDownloader, "radar_exists", exists),
-        patch.object(RadarDownloader, "fetch_radar", AsyncMock()),
+        patch.object(StacDownloader, "discover", discover),
+        patch.object(StacDownloader, "fetch", AsyncMock()),
         patch(
             f"{SETUP_MODULE}.hail_coordinator.MeteoSwissHailCoordinator."
             "_async_update_data",

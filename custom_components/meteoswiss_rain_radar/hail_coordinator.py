@@ -26,7 +26,7 @@ from .const import (
     DEFAULT_HAIL_THRESHOLD,
     DOMAIN,
 )
-from .hail_downloader import HailDownloader
+from .hail_downloader import create_hail_downloader
 from .hail_reader import HailAnalysis, read_hail
 
 _LOGGER = logging.getLogger(__name__)
@@ -79,7 +79,7 @@ class MeteoSwissHailCoordinator(DataUpdateCoordinator[HailResult]):
             name=f"{DOMAIN}_hail_{entry.entry_id}",
             update_interval=timedelta(seconds=self.poll_seconds),
         )
-        self.downloader = HailDownloader(
+        self.downloader = create_hail_downloader(
             get_async_client(hass), async_add_executor_job=hass.async_add_executor_job
         )
         self._analysis_key: tuple | None = None

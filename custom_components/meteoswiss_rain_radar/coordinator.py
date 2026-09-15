@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
-from io import BytesIO
 from typing import TYPE_CHECKING
 
 import httpx
@@ -27,7 +26,8 @@ from .const import (
 from .detector import RainDetector
 from .models import RadarResult
 from .radar import RadarData
-from .radar_downloader import RadarDownloader
+from .radar_downloader import create_radar_downloader
+from .stac_downloader import StacAsset
 
 if TYPE_CHECKING:
     from .hail_coordinator import MeteoSwissHailCoordinator
@@ -48,11 +48,14 @@ class MeteoSwissRainRadarCoordinator(DataUpdateCoordinator[RadarResult]):
         )
         self.entry = entry
         self.hail_coordinator: MeteoSwissHailCoordinator | None = None
-        self.downloader = RadarDownloader(get_async_client(hass))
+        self.downloader = create_radar_downloader(
+            get_async_client(hass), async_add_executor_job=hass.async_add_executor_job
+        )
         self.detector = RainDetector()
         self.max_age_minutes = self._setting(CONF_RAIN_MAX_AGE, DEFAULT_RAIN_MAX_AGE)
         self.poll_seconds = self._setting(CONF_RAIN_POLL, DEFAULT_RAIN_POLL)
         self.result_data: RadarResult | None = None
+        self._frame_key: tuple | None = None
         self._failed = False
         self._remove_listener = None
         self._cancel_expiry = None
@@ -154,28 +157,16 @@ class MeteoSwissRainRadarCoordinator(DataUpdateCoordinator[RadarResult]):
             return
         await self.async_refresh()
 
-    def _expected_timestamp(self):
-        now = datetime.now(UTC)
-
-        minute = (now.minute // 5) * 5
-
-        return now.replace(
-            minute=minute,
-            second=0,
-            microsecond=0,
-            tzinfo=UTC,
-        )
-
     def _read_radar(
         self,
-        radar_bytes: BytesIO,
+        content: bytes,
         threshold: float,
         latitude: float,
         longitude: float,
         radius_km: float,
     ):
         """Decode and search the grid in the executor, off the event loop."""
-        radar_data = RadarData.from_bytes(radar_bytes, threshold=threshold)
+        radar_data = RadarData.from_bytes(content, threshold=threshold)
         rain, distance = self.detector.detect(
             radar_data,
             latitude=latitude,
@@ -202,27 +193,38 @@ class MeteoSwissRainRadarCoordinator(DataUpdateCoordinator[RadarResult]):
         return result
 
     async def _update_radar(self) -> RadarResult:
-        """Try the current frame, then one bounded step back, then the cache."""
-        now = datetime.now(UTC)
+        """Read the published asset from the catalogue; never guess a filename."""
         cached = self.result_data
-        current = self._expected_timestamp()
         try:
-            for timestamp in (current, current - timedelta(minutes=5)):
-                if self._stopped:
-                    break  # Unloading: never start new work after stop().
-                if now - timestamp > timedelta(minutes=self.max_age_minutes):
-                    break  # Too old to be usable even if it is published.
-                if cached is not None:
-                    if timestamp < cached.last_update:
-                        break  # Nothing newer to download.
-                    if timestamp == cached.last_update and not self._failed:
-                        break  # Already downloaded; only its age changes.
-                published = await self.downloader.radar_exists(timestamp)
-                if self._stopped:
-                    break
-                if not published:
-                    continue  # Not published yet; the source writes around :50.
-                return await self._download(timestamp)
+            if self._stopped:
+                return self._no_new_frame(cached)  # Never start work after stop().
+            discovery = await self.downloader.discover(datetime.now(UTC))
+            found = RadarResult(
+                None,
+                None,
+                None,
+                discovery.observation,
+                discovery.health,
+                self.max_age_minutes,
+            ).at(datetime.now(UTC))
+            if self._stopped or discovery.asset is None or found.health != "ok":
+                return self._no_new_frame(cached, found)
+            if (
+                cached is not None
+                and cached.last_update is not None
+                and discovery.asset.observation < cached.last_update
+            ):
+                return self._no_new_frame(cached)
+            settings = (
+                self._setting(CONF_THRESHOLD, DEFAULT_THRESHOLD),
+                self.entry.data["latitude"],
+                self.entry.data["longitude"],
+                self._setting(CONF_RADIUS, DEFAULT_RADIUS),
+            )
+            key = (*discovery.asset.identity, *settings)
+            if key == self._frame_key and cached is not None and not self._failed:
+                return cached.at(datetime.now(UTC))  # Only its age changes.
+            return await self._download(discovery.asset, settings, key)
         except (
             httpx.HTTPError,
             TimeoutError,
@@ -237,30 +239,34 @@ class MeteoSwissRainRadarCoordinator(DataUpdateCoordinator[RadarResult]):
             )
             self._failed = True
             return self._unusable("error")
-        if self._failed:
-            # An unpublished frame is no evidence; only a download clears a failure.
-            return self._unusable("error")
-        if cached is None:
-            return self._unusable("missing")
-        return cached.at(datetime.now(UTC))
 
-    async def _download(self, timestamp: datetime) -> RadarResult:
+    def _no_new_frame(
+        self, cached: RadarResult | None, found: RadarResult | None = None
+    ) -> RadarResult:
+        """An absent frame is no evidence; only a download clears a failure."""
+        if self._failed:
+            return self._unusable("error")
+        if cached is not None:
+            return cached.at(datetime.now(UTC))
+        if found is not None:
+            return found
+        return self._unusable("missing")
+
+    async def _download(
+        self, asset: StacAsset, settings: tuple, key: tuple
+    ) -> RadarResult:
         """Fetch and read one five-minute frame, keeping its source timestamp."""
-        radar_bytes = await self.downloader.fetch_radar(timestamp)
+        content = await self.downloader.fetch(asset, force=self._failed)
         radar_data, rain, distance = await self.hass.async_add_executor_job(
-            self._read_radar,
-            radar_bytes,
-            self._setting(CONF_THRESHOLD, DEFAULT_THRESHOLD),
-            self.entry.data["latitude"],
-            self.entry.data["longitude"],
-            self._setting(CONF_RADIUS, DEFAULT_RADIUS),
+            self._read_radar, content, *settings
         )
         self._failed = False
+        self._frame_key = key
         self.result_data = RadarResult(
             radar=radar_data,
             rain=rain,
             distance_km=distance,
-            last_update=timestamp,
+            last_update=asset.observation,
             health="ok",
             max_age_minutes=self.max_age_minutes,
         )

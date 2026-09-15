@@ -25,12 +25,12 @@ from custom_components.meteoswiss_rain_radar.hail_coordinator import (
     HailResult,
     MeteoSwissHailCoordinator,
 )
-from custom_components.meteoswiss_rain_radar.hail_downloader import (
-    HailAsset,
-    HailDiscovery,
-    HailDownloader,
-)
 from custom_components.meteoswiss_rain_radar.hail_reader import HailAnalysis, read_hail
+from custom_components.meteoswiss_rain_radar.stac_downloader import (
+    Discovery,
+    StacAsset,
+    StacDownloader,
+)
 
 from .hail_helpers import OBSERVATION, hail_bytes
 
@@ -46,16 +46,14 @@ def make_coordinator(hass, *, options=None):
     )
     entry.add_to_hass(hass)
     coordinator = MeteoSwissHailCoordinator(hass, entry)
-    coordinator.downloader = AsyncMock(spec=HailDownloader)
+    coordinator.downloader = AsyncMock(spec=StacDownloader)
     content = hail_bytes(np.full((7, 7), 0.8))
-    asset = HailAsset(
+    asset = StacAsset(
         "https://data.geo.admin.ch/test.h5",
         hashlib.sha256(content).hexdigest(),
         OBSERVATION,
     )
-    coordinator.downloader.discover.return_value = HailDiscovery(
-        asset, "ok", OBSERVATION
-    )
+    coordinator.downloader.discover.return_value = Discovery(asset, "ok", OBSERVATION)
     coordinator.downloader.fetch.return_value = content
     return coordinator
 
@@ -136,9 +134,7 @@ async def test_error_cannot_reuse_fresh_clear_or_positive_data(coordinator):
     [("missing", None), ("future", OBSERVATION + timedelta(minutes=5))],
 )
 async def test_missing_future_never_false_or_zero(coordinator, health, observation):
-    coordinator.downloader.discover.return_value = HailDiscovery(
-        None, health, observation
-    )
+    coordinator.downloader.discover.return_value = Discovery(None, health, observation)
     await coordinator.async_refresh()
     assert coordinator.data.analysis == HailAnalysis(health)
     assert coordinator.data.age_minutes(OBSERVATION) is None
@@ -196,10 +192,8 @@ async def test_same_timestamp_correction_reanalysed(coordinator):
     await coordinator.async_refresh()
     changed = hail_bytes()
     old = coordinator.downloader.discover.return_value.asset
-    asset = HailAsset(old.url, hashlib.sha256(changed).hexdigest(), OBSERVATION)
-    coordinator.downloader.discover.return_value = HailDiscovery(
-        asset, "ok", OBSERVATION
-    )
+    asset = StacAsset(old.url, hashlib.sha256(changed).hexdigest(), OBSERVATION)
+    coordinator.downloader.discover.return_value = Discovery(asset, "ok", OBSERVATION)
     coordinator.downloader.fetch.return_value = changed
     await coordinator.async_refresh()
     assert coordinator.data.analysis.detected is False

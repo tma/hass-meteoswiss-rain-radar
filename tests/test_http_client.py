@@ -15,17 +15,26 @@ from custom_components.meteoswiss_rain_radar.coordinator import (
 from custom_components.meteoswiss_rain_radar.hail_coordinator import (
     MeteoSwissHailCoordinator,
 )
-from custom_components.meteoswiss_rain_radar.hail_downloader import HailDownloader
-from custom_components.meteoswiss_rain_radar.radar_downloader import RadarDownloader
+from custom_components.meteoswiss_rain_radar.hail_downloader import (
+    create_hail_downloader,
+)
+from custom_components.meteoswiss_rain_radar.radar_downloader import (
+    create_radar_downloader,
+)
 
 from .hail_helpers import OBSERVATION
 from .test_hail_downloader import TODAY_URL, item, stac_asset
 from .test_hail_setup import make_entry
+from .test_radar_downloader import NOW, rain_asset
+from .test_radar_downloader import daily_url as rain_daily_url
+from .test_radar_downloader import item as rain_item
 
 MODULE = "custom_components.meteoswiss_rain_radar.http_client"
 
 
-@pytest.mark.parametrize("downloader_type", [RadarDownloader, HailDownloader])
+@pytest.mark.parametrize(
+    "downloader_type", [create_radar_downloader, create_hail_downloader]
+)
 async def test_owned_lazy_client_ssl_is_off_loop_and_reused(downloader_type):
     downloader = downloader_type()
     loop_thread = threading.get_ident()
@@ -55,7 +64,9 @@ async def test_owned_lazy_client_ssl_is_off_loop_and_reused(downloader_type):
         await downloader._get_client()
 
 
-@pytest.mark.parametrize("downloader_type", [RadarDownloader, HailDownloader])
+@pytest.mark.parametrize(
+    "downloader_type", [create_radar_downloader, create_hail_downloader]
+)
 async def test_cancellation_during_owned_construction_closes_late_client(
     downloader_type,
 ):
@@ -100,44 +111,30 @@ async def test_borrowed_client_request_settings_do_not_mutate_defaults(httpx_moc
         follow_redirects=True,
         headers={"X-Shared": "unchanged"},
     )
-    rain, hail = RadarDownloader(client), HailDownloader(client)
-    _, rain_url = rain.build_url(OBSERVATION)
-    httpx_mock.add_response(url=rain_url, method="HEAD")
-    httpx_mock.add_response(url=rain_url, method="GET", content=b"rain")
+    rain = create_radar_downloader(client)
+    hail = create_hail_downloader(client)
+    published = rain_asset(content=b"rain")
+    rain_url = rain_daily_url()
+    httpx_mock.add_response(url=rain_url, json=rain_item(published))
+    httpx_mock.add_response(url=published["href"], content=b"rain")
     httpx_mock.add_response(url=TODAY_URL, json=item(stac_asset()))
-    httpx_mock.add_response(
-        url=TODAY_URL, status_code=302, headers={"Location": "https://example.com"}
-    )
-    httpx_mock.add_response(
-        url=rain_url,
-        method="HEAD",
-        status_code=302,
-        headers={"Location": "https://example.com"},
-    )
-    httpx_mock.add_response(
-        url=rain_url,
-        method="GET",
-        status_code=302,
-        headers={"Location": "https://example.com"},
-    )
+    for url in (TODAY_URL, rain_url):
+        httpx_mock.add_response(
+            url=url, status_code=302, headers={"Location": "https://example.com"}
+        )
     defaults = dict(client.headers)
     try:
-        assert await rain.radar_exists(OBSERVATION)
-        assert (await rain.fetch_radar(OBSERVATION)).read() == b"rain"
+        discovery = await rain.discover(NOW)
+        assert discovery.health == "ok"
+        assert await rain.fetch(discovery.asset) == b"rain"
         assert (await hail.discover(OBSERVATION)).health == "ok"
-        with pytest.raises(httpx.HTTPStatusError):
-            await hail.discover(OBSERVATION)
         # An unfollowed redirect is a failure, not an absent radar file.
-        with pytest.raises(httpx.HTTPStatusError):
-            await rain.radar_exists(OBSERVATION)
-        with pytest.raises(httpx.HTTPStatusError):
-            await rain.fetch_radar(OBSERVATION)
+        for downloader, moment in ((hail, OBSERVATION), (rain, NOW)):
+            with pytest.raises(httpx.HTTPStatusError):
+                await downloader.discover(moment)
         for request in httpx_mock.get_requests():
-            timeout = 15 if str(request.url) == TODAY_URL else 30
-            assert set(request.extensions["timeout"].values()) == {timeout}
+            assert set(request.extensions["timeout"].values()) == {15}
             assert request.headers["X-Shared"] == "unchanged"
-            if timeout == 30:
-                assert request.headers["Cache-Control"] == "no-cache"
         assert client.timeout == httpx.Timeout(77)
         assert client.follow_redirects is True
         assert dict(client.headers) == defaults

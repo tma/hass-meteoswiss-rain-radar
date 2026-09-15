@@ -36,6 +36,8 @@ For hail, `on` requires a fresh qualifying cell; `off` requires fresh, complete 
 
 Rain follows the same freshness rule: an observation older than the configured limit, a missing or future timestamp, or a failed update makes rain and rain distance **unknown**, never `off`. A cached frame keeps its own source timestamp; it is never renewed by a poll that found nothing new, and it expires on its own timer without a download. Rain age and health stay readable during outages so automations can see why values are unknown.
 
+Rain and hail both look up the published file in the official MeteoSwiss catalogue instead of building its name. The two-character radar-site suffix in `RZCyyjjjHHMMKK.XYZ.h5` changes in service, and a built name returns 403 when it does. This fixes discovery only. Rain decoding, geometry and the missing rain coverage state are unchanged.
+
 POH estimates hail of any size at the ground. A cell at or above 80% within 10 km qualifies by default; this is **not an 80% chance of hail hitting your property**, a forecast or an arrival time. MESHS is not required and has no entity.
 
 Hail defaults are provisional: **10 km radius, inclusive 80% POH, maximum age 10 minutes, polling every 60 seconds**. Fresh qualifying data is reported immediately on receipt, with no eight-minute delay. These settings are not meteorologically validated and carry no source-latency guarantee. Missing, stale or incomplete data cannot prove clear conditions.

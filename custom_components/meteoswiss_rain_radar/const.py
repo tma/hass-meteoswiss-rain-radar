@@ -21,7 +21,6 @@ CONF_RAIN_POLL = "rain_poll_seconds"
 DEFAULT_RAIN_MAX_AGE = 10.0
 DEFAULT_RAIN_POLL = 60.0
 
-METEOSWISS_API_BASE_URL = "https://data.geo.admin.ch/ch.meteoschweiz.ogd-radar-precip/"
 # Provisional reporting settings, independent of the legacy rain options.
 CONF_HAIL_RADIUS = "hail_radius_km"
 CONF_HAIL_THRESHOLD = "hail_poh_threshold"

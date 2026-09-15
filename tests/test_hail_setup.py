@@ -40,10 +40,12 @@ from custom_components.meteoswiss_rain_radar.coordinator import (
 from custom_components.meteoswiss_rain_radar.hail_coordinator import HailResult
 from custom_components.meteoswiss_rain_radar.hail_reader import HailAnalysis
 from custom_components.meteoswiss_rain_radar.models import RadarResult
-from custom_components.meteoswiss_rain_radar.radar_downloader import RadarDownloader
 
 from .hail_helpers import OBSERVATION, hail_bytes
 from .test_hail_downloader import TODAY_URL, item, stac_asset
+from .test_radar_downloader import daily_url as rain_daily_url
+from .test_radar_downloader import item as rain_item
+from .test_radar_downloader import rain_asset
 
 MODULE = "custom_components.meteoswiss_rain_radar"
 pytestmark = pytest.mark.usefixtures("enable_custom_integrations")
@@ -307,9 +309,11 @@ async def http_setup_entry(hass, freezer, httpx_mock):
     freezer.move_to(OBSERVATION)
     content = hail_bytes()
     asset = stac_asset(content=content)
-    _, rain_url = RadarDownloader.build_url(OBSERVATION)
-    httpx_mock.add_response(url=rain_url, method="HEAD")
-    httpx_mock.add_response(url=rain_url, method="GET", content=content)
+    rain = rain_asset(OBSERVATION, content=content)
+    httpx_mock.add_response(
+        url=rain_daily_url(OBSERVATION), json=rain_item(rain, day=OBSERVATION)
+    )
+    httpx_mock.add_response(url=rain["href"], content=content)
     httpx_mock.add_response(url=TODAY_URL, json=item(asset), is_reusable=True)
     httpx_mock.add_response(url=asset["href"], content=content)
     entry = make_entry(hass)
@@ -335,18 +339,26 @@ async def test_rain_inflight_refresh_cannot_rearm_after_unload(
     previous = rain.result_data
     entered, release = asyncio.Event(), asyncio.Event()
     next_observation = OBSERVATION + timedelta(minutes=5)
-    _, rain_url = rain.downloader.build_url(next_observation)
+    url, checksum = rain._frame_key[:2]
+    current = {"href": url, "file:checksum": f"1220{checksum}"}
+    following = rain_asset(next_observation, content=b"next-frame")
 
     async def response(request):
         entered.set()
         await release.wait()
-        return httpx.Response(404 if outcome == "missing" else 200, content=b"rain")
+        if outcome == "missing":  # The next frame is not published yet.
+            return httpx.Response(200, json=rain_item(current, day=OBSERVATION))
+        return httpx.Response(200, content=b"next-frame")
 
     if outcome == "success":
-        httpx_mock.add_response(url=rain_url, method="HEAD")
-    httpx_mock.add_callback(
-        response, url=rain_url, method="HEAD" if outcome == "missing" else "GET"
-    )
+        httpx_mock.add_response(
+            url=rain_daily_url(OBSERVATION),
+            json=rain_item(current, following, day=OBSERVATION),
+        )
+        httpx_mock.add_callback(response, url=following["href"])
+    else:
+        httpx_mock.add_callback(response, url=rain_daily_url(OBSERVATION))
+
     with patch(
         f"{MODULE}.coordinator.RadarData.from_bytes", return_value=previous.radar
     ):
@@ -362,7 +374,10 @@ async def test_rain_inflight_refresh_cannot_rearm_after_unload(
             await hass.async_block_till_done()
             assert rain.last_exception is None
             assert rain._remove_listener is None
-            # A resolved request after stop starts no further HEAD or GET.
+            assert rain.downloader._items == {}
+            assert rain.downloader._cached_bytes is None
+            assert rain.downloader._cached_identity is None
+            # A resolved request after stop starts no further catalogue or file GET.
             assert httpx_mock.get_requests() == requests_at_unload
             if outcome == "missing":
                 assert rain.result_data is previous
@@ -525,26 +540,28 @@ async def test_shutdown_during_setup_cancels_owner_and_cleans_resources(
         entered.set()
         await release.wait()
 
+    rain = rain_asset(OBSERVATION, content=content)
+
     async def rain_response(request):
         if stage == "rain":
             await barrier()
-        return httpx.Response(200)
+        return httpx.Response(200, json=rain_item(rain, day=OBSERVATION))
 
     async def daily_response(request):
         if stage == "hail":
             await barrier()
         return httpx.Response(200, json=item(asset), headers={"ETag": '"setup"'})
 
-    async def rain_update(rain):
-        assert await rain.downloader.radar_exists(OBSERVATION)
-        rain._schedule_next_update()
+    async def rain_update(coordinator):
+        assert (await coordinator.downloader.discover(OBSERVATION)).health == "ok"
+        coordinator._schedule_next_update()
         return RadarResult(MagicMock(), False, None, OBSERVATION)
 
     async def forward(*args):
         assert stage == "platforms"
         await barrier()
 
-    httpx_mock.add_callback(rain_response, method="HEAD")
+    httpx_mock.add_callback(rain_response, url=rain_daily_url(OBSERVATION))
     if stage != "rain":
         httpx_mock.add_callback(daily_response, url=TODAY_URL)
     if stage == "platforms":

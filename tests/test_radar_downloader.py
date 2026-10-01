@@ -292,6 +292,65 @@ async def test_missing_checksum_is_an_error_not_a_missing_frame(downloader, http
         await downloader.discover(NOW)
 
 
+def break_checksum(asset, variant):
+    if variant == "missing":
+        del asset["file:checksum"]
+    else:
+        asset["file:checksum"] = variant
+
+
+BAD_CHECKSUMS = ["missing", "sha256:abc", "1220" + "0" * 63]
+
+
+@pytest.mark.parametrize("variant", BAD_CHECKSUMS)
+@pytest.mark.parametrize("latest_first", [True, False])
+async def test_older_invalid_checksum_does_not_block_valid_latest(
+    downloader, httpx_mock, variant, latest_first
+):
+    old = rain_asset(OBSERVATION - timedelta(minutes=5))
+    break_checksum(old, variant)
+    latest = rain_asset()
+    httpx_mock.add_response(
+        url=daily_url(), json=item(*((latest, old) if latest_first else (old, latest)))
+    )
+
+    result = await downloader.discover(NOW)
+
+    assert result.asset.url == latest["href"]
+    assert result.asset.checksum == latest["file:checksum"][4:]
+
+
+@pytest.mark.parametrize("variant", BAD_CHECKSUMS)
+async def test_invalid_latest_is_an_error_naming_it_not_replaced_by_older(
+    downloader, httpx_mock, variant
+):
+    older = rain_asset(OBSERVATION - timedelta(minutes=5))
+    latest = rain_asset()
+    break_checksum(latest, variant)
+    httpx_mock.add_response(url=daily_url(), json=item(older, latest))
+
+    with pytest.raises(ValueError, match="checksum") as error:
+        await downloader.discover(NOW)
+
+    assert latest["href"] in str(error.value)
+
+
+async def test_cached_daily_304_keeps_selecting_valid_latest(downloader, httpx_mock):
+    old = rain_asset(OBSERVATION - timedelta(minutes=5))
+    del old["file:checksum"]
+    latest = rain_asset()
+    httpx_mock.add_response(
+        url=daily_url(), json=item(old, latest), headers={"ETag": '"daily"'}
+    )
+    httpx_mock.add_response(url=daily_url(), status_code=304)
+
+    first = (await downloader.discover(NOW)).asset
+    again = (await downloader.discover(NOW + timedelta(seconds=60))).asset
+
+    assert first.url == again.url == latest["href"]
+    assert httpx_mock.get_requests()[-1].headers["If-None-Match"] == '"daily"'
+
+
 async def test_file_checksum_mismatch_and_403(downloader, httpx_mock):
     asset = rain_asset()
     selected = StacAsset(asset["href"], asset["file:checksum"][4:], OBSERVATION)

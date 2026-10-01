@@ -214,7 +214,11 @@ def _parse_metadata(
 def _select_candidates(
     metadata: _Metadata, now: datetime, cutoff_days: int = 14
 ) -> Discovery:
-    """Recheck time eligibility on every response, including a cached 304."""
+    """Recheck time eligibility on every response, including a cached 304.
+
+    The checksum is deliberately not checked here: only the finally selected
+    asset needs one (see _require_checksum), and a newer page may supersede it.
+    """
     latest = None
     future = None
     cutoff = now - timedelta(days=cutoff_days)
@@ -224,8 +228,6 @@ def _select_candidates(
                 min(future, candidate.observation) if future else candidate.observation
             )
         elif candidate.observation >= cutoff:
-            if not candidate.checksum:
-                raise ValueError("Radar asset lacks a supported SHA256 checksum")
             # Same-time duplicates are ordered by href only, to stay deterministic
             # without claiming that one site suffix is better than another.
             if latest is None or (candidate.observation, candidate.url) > (
@@ -236,6 +238,15 @@ def _select_candidates(
     if latest:
         return Discovery(latest, "ok", latest.observation)
     return Discovery(None, "future" if future else "missing", future)
+
+
+def _require_checksum(result: Discovery) -> Discovery:
+    """Fail for an invalid newest frame instead of silently using an older one."""
+    if result.asset and not result.asset.checksum:
+        raise ValueError(
+            f"Radar asset lacks a supported SHA256 checksum: {result.asset.url}"
+        )
+    return result
 
 
 def _newer_result(first: Discovery, second: Discovery) -> Discovery:
@@ -389,7 +400,7 @@ class StacDownloader:
             )
             result = _newer_result(result, selected)
             url = metadata.next_url
-        return result
+        return _require_checksum(result)
 
     async def discover(self, now: datetime) -> Discovery:
         """Poll today's complete item; consult older days only without a past asset."""
@@ -428,7 +439,7 @@ class StacDownloader:
                 )
                 result = _newer_result(result, selected)
                 if result.asset:
-                    return result
+                    return _require_checksum(result)
             return result
 
     async def fetch(self, asset: StacAsset, *, force: bool = False) -> bytes:
